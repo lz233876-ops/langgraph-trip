@@ -1,0 +1,15 @@
+# 构建上下文排除项 (避免把本地环境/密钥/日志打镜像)
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+logs/
+.env
+*.log
+.git/
+.gitignore
+.pytest_cache/
+tests/
+Dockerfile
+docker-compose.yml
+*.md

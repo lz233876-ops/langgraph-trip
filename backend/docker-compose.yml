@@ -1,0 +1,26 @@
+# 智能旅行规划助手 - 后端服务编排
+# 使用: docker compose up -d --build
+services:
+  backend:
+    build: .
+    container_name: trip-planner-backend
+    ports:
+      - "8000:8000"
+    # 从 .env 注入 API 密钥 (高德/LLM)
+    env_file:
+      - .env
+    # 健康检查探针: 与 /health 系统路由配合, 容器不健康自动重启
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    # 异常退出自动重启
+    restart: unless-stopped
