@@ -21,5 +21,14 @@ python-multipart>=0.0.9
 # 可观测性: Prometheus 指标
 prometheus-fastapi-instrumentator>=7.0.0
 
+# RAG 知识库: 千问 text-embedding-v4 嵌入 + ChromaDB 向量库
+# 嵌入直接封装 dashscope SDK (不依赖 langchain-dashscope 薄封装)
+dashscope>=1.14.1
+langchain-chroma>=0.1.0
+langchain-text-splitters>=0.3.0
+
+# 历史记录数据库 (SQLAlchemy + SQLite, 可无缝切换 PostgreSQL)
+sqlalchemy>=2.0.0
+
 # 测试
 pytest>=8.0.0

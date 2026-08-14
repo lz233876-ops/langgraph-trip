@@ -129,13 +129,35 @@ class MultiAgentTripPlanner:
     # ============ LangGraph 节点 ============
 
     def _search_attractions(self, state: GraphState) -> dict:
-        """节点1: 搜索景点 (服务直调, 不走LLM)"""
+        """节点1: 搜索景点 (服务直调, 不走LLM)
+
+        1. 按用户首个偏好用高德搜索景点
+        2. 用 RAG 知识库补充当地必打卡景点 (按名搜索拿真实坐标),
+           让 LLM 能真正采用知识库推荐的景点, 而不只是"参考"
+        """
         request = state["request"]
         logger.info("📍 步骤1: 搜索景点...")
         try:
             keywords = request.preferences[0] if request.preferences else "景点"
             pois = self.amap_service.search_poi(keywords, request.city)
             logger.info(f"   找到 {len(pois)} 个景点")
+
+            # RAG 知识库景点补充 (失败/未启用时静默跳过, 不影响主流程)
+            try:
+                from ..services.rag_service import get_rag_service
+
+                known_names = {p.name for p in pois if p.name}
+                for name in get_rag_service().get_knowledge_attractions(request.city):
+                    if any(name in n for n in known_names):
+                        continue
+                    kb_pois = self.amap_service.search_poi(name, request.city)
+                    if kb_pois:
+                        pois.append(kb_pois[0])
+                        known_names.add(kb_pois[0].name or "")
+                        logger.info(f"   + 知识库补充景点: {name}")
+            except Exception as e:
+                logger.warning(f"   ⚠️ 知识库景点补充失败(不影响主流程): {e}")
+
             return {"attraction_pois": pois}
         except Exception as e:
             logger.warning(f"   ⚠️ 景点搜索失败: {e}")
@@ -270,6 +292,20 @@ class MultiAgentTripPlanner:
         # 兜底: 若LLM未返回预算, 前端预算页会异常, 这里自动补齐
         trip_plan = self._ensure_budget(trip_plan, request)
 
+        # 知识库增强: 给每个景点追加知识库详情(门票/开放时间/交通/避坑),
+        # 让知识库内容真正落到前端每个景点上。失败/未启用时静默跳过。
+        try:
+            from ..services.rag_service import get_rag_service
+
+            rag = get_rag_service()
+            for day in trip_plan.days:
+                for attr in day.attractions:
+                    detail = rag.get_attraction_rag_text(attr.name, trip_plan.city)
+                    if detail:
+                        attr.description = f"{attr.description}\n\n——知识库参考——\n{detail}"
+        except Exception as e:
+            logger.warning(f"⚠️  知识库详情增强失败(不影响主流程): {e}")
+
         logger.info(f"\n{'='*60}")
         logger.info(f"✅ 旅行计划生成完成! 天数: {len(trip_plan.days)}")
         logger.info(f"{'='*60}\n")
@@ -340,6 +376,18 @@ class MultiAgentTripPlanner:
 """
         if request.free_text_input:
             query += f"\n**额外要求:** {request.free_text_input}\n"
+
+        # RAG 增强: 检索城市旅游知识 + 相似历史行程, 注入 prompt 作为参考。
+        # 知识库让行程更贴合当地实际(门票/交通/避坑), 历史行程让风格更稳定。
+        # RAG 未启用或检索失败时跳过, 不影响正常生成。
+        try:
+            from ..services.rag_service import get_rag_service
+
+            rag_context = get_rag_service().build_rag_context(request)
+            if rag_context:
+                query += f"\n\n{rag_context}\n"
+        except Exception as e:
+            logger.warning(f"⚠️ RAG 上下文注入失败(不影响生成): {e}")
 
         query += "\n请严格按照 system 中定义的 JSON 结构输出完整 JSON。"
         return query

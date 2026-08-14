@@ -41,6 +41,10 @@ ENV/
 *.log
 logs/
 
+# 运行时数据 (数据库/向量库; data/knowledge 知识库文档需保留, 不入忽略)
+data/chroma/
+*.db
+
 # 测试
 .pytest_cache/
 .coverage

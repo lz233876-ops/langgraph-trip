@@ -14,7 +14,7 @@ COPY run.py .
 
 # 3. 非 root 用户运行 (安全最佳实践: 即使被攻破也无法读写宿主系统)
 RUN useradd -m appuser \
-    && mkdir -p logs \
+    && mkdir -p logs data \
     && chown -R appuser:appuser /app
 USER appuser
 

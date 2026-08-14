@@ -61,5 +61,43 @@ export async function healthCheck(): Promise<any> {
   }
 }
 
+/**
+ * 查询历史行程列表 (分页)
+ */
+export async function fetchHistory(
+  page: number = 1,
+  pageSize: number = 10,
+  city?: string
+): Promise<any> {
+  const response = await apiClient.get('/api/history', {
+    params: { page, page_size: pageSize, city: city || undefined }
+  })
+  return response.data
+}
+
+/**
+ * 查询历史行程详情 (含完整计划)
+ */
+export async function fetchHistoryDetail(id: number): Promise<any> {
+  const response = await apiClient.get(`/api/history/${id}`)
+  return response.data
+}
+
+/**
+ * 更新历史行程 (编辑保存后持久化)
+ */
+export async function updateHistory(id: number, plan: any): Promise<any> {
+  const response = await apiClient.put(`/api/history/${id}`, plan)
+  return response.data
+}
+
+/**
+ * 删除历史行程
+ */
+export async function deleteHistory(id: number): Promise<any> {
+  const response = await apiClient.delete(`/api/history/${id}`)
+  return response.data
+}
+
 export default apiClient
 

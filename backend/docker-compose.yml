@@ -6,9 +6,12 @@ services:
     container_name: trip-planner-backend
     ports:
       - "8000:8000"
-    # 从 .env 注入 API 密钥 (高德/LLM)
+    # 从 .env 注入 API 密钥 (高德/LLM/千问嵌入)
     env_file:
       - .env
+    # 数据卷: SQLite 数据库 + Chroma 向量库持久化到宿主机 backend/data
+    volumes:
+      - ./data:/app/data
     # 健康检查探针: 与 /health 系统路由配合, 容器不健康自动重启
     healthcheck:
       test:

@@ -10,7 +10,8 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from ..config import get_settings, validate_config, print_config
 from ..core.logging import setup_logging
 from ..core.exceptions import BizException, biz_exception_handler, global_exception_handler
-from .routes import trip, poi, map as map_routes
+from ..db.database import init_db
+from .routes import trip, poi, map as map_routes, history, rag
 
 # 初始化日志(幂等): 控制台 + 文件落盘。
 # 必须在 uvicorn 重配日志之前执行; reload 模式下子进程重新 import 本模块时也会执行, 保证任意模式日志可用。
@@ -49,6 +50,23 @@ async def lifespan(app: FastAPI):
     print(f"📚 API文档: http://localhost:{settings.port}/docs")
     print(f"📖 ReDoc文档: http://localhost:{settings.port}/redoc")
     print("=" * 60 + "\n")
+
+    # 初始化数据库 (SQLite 建表, 幂等)
+    try:
+        init_db()
+    except Exception as e:
+        print(f"❌ 数据库初始化失败: {e}")
+
+    # 初始化 RAG 知识库 (自动索引 data/knowledge, 未配置 key 时自动降级)
+    try:
+        from ..services.rag_service import get_rag_service
+
+        rag_service = get_rag_service()
+        if rag_service.enabled:
+            rag_service.ensure_knowledge_index()
+            print("🧠 RAG 知识库已就绪: 千问 text-embedding-v4 + ChromaDB (知识库: data/knowledge)")
+    except Exception as e:
+        print(f"⚠️ RAG 初始化失败(不影响主流程): {e}")
 
     yield  # 应用运行期间挂起
 
@@ -103,6 +121,8 @@ app.add_middleware(
 app.include_router(trip.router, prefix="/api")
 app.include_router(poi.router, prefix="/api")
 app.include_router(map_routes.router, prefix="/api")
+app.include_router(history.router, prefix="/api")
+app.include_router(rag.router, prefix="/api")
 
 
 @app.get("/")

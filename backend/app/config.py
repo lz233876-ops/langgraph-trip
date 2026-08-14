@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.7
     llm_timeout: int = 60
 
+    # RAG 嵌入模型配置 (千问 text-embedding-v4, 阿里云百炼 DashScope)
+    # 未配置时 RAG 功能自动降级禁用, 不影响旅行规划主流程
+    dashscope_api_key: str = Field(default="")
+    embedding_model: str = Field(default="text-embedding-v4")
+
     # 日志配置
     log_level: str = "INFO"
 
@@ -124,6 +129,7 @@ def print_config():
     print(f"LLM Model: {settings.llm_model}")
     print(f"LLM Temperature: {settings.llm_temperature}")
     print(f"LLM Timeout: {settings.llm_timeout}s")
+    print(f"RAG 嵌入模型: {settings.embedding_model} ({'已配置' if settings.dashscope_api_key else '未配置(自动禁用)'})")
     print(f"日志级别: {settings.log_level}")
 
 

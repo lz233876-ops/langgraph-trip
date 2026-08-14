@@ -7,13 +7,32 @@
       <div class="circle circle-3"></div>
     </div>
 
+    <!-- 历史行程入口 -->
+    <a-button class="history-entry" @click="goHistory">
+      📜 历史行程
+    </a-button>
+
     <!-- 页面标题 -->
     <div class="page-header">
+      <div class="brand-badge">⚡ LangChain AI 驱动</div>
       <div class="icon-wrapper">
         <span class="icon">✈️</span>
       </div>
       <h1 class="page-title">智能旅行助手</h1>
-      <p class="page-subtitle">基于AI的个性化旅行规划,让每一次出行都完美无忧</p>
+      <p class="page-subtitle">输入目的地，AI 为你规划每一天的吃、住、行、玩</p>
+      <!-- 热门目的地快捷选择 -->
+      <div class="hot-cities">
+        <span class="hot-label">热门目的地</span>
+        <a-tag
+          v-for="city in hotCities"
+          :key="city"
+          class="hot-city-tag"
+          :class="{ active: formData.city === city }"
+          @click="selectCity(city)"
+        >
+          {{ city }}
+        </a-tag>
+      </div>
     </div>
 
     <a-card class="form-card" :bordered="false">
@@ -200,6 +219,11 @@
         </a-form-item>
       </a-form>
     </a-card>
+
+    <!-- 底部品牌信息 -->
+    <div class="home-footer">
+      <span>Powered by LangChain · LangGraph · FastAPI · 高德地图</span>
+    </div>
   </div>
 </template>
 
@@ -216,7 +240,13 @@ const loading = ref(false)
 const loadingProgress = ref(0)
 const loadingStatus = ref('')
 
-const formData = reactive<TripFormData & { start_date: Dayjs | null; end_date: Dayjs | null }>({
+// 表单数据类型: 日期在表单里是 Dayjs 对象, 提交时再格式化为字符串
+type FormDataType = Omit<TripFormData, 'start_date' | 'end_date'> & {
+  start_date: Dayjs | null
+  end_date: Dayjs | null
+}
+
+const formData = reactive<FormDataType>({
   city: '',
   start_date: null,
   end_date: null,
@@ -226,6 +256,18 @@ const formData = reactive<TripFormData & { start_date: Dayjs | null; end_date: D
   preferences: [],
   free_text_input: ''
 })
+
+// 热门目的地快捷选择
+const hotCities = ['北京', '上海', '杭州', '成都', '西安', '桂林', '丽江', '重庆']
+
+const selectCity = (city: string) => {
+  formData.city = city
+}
+
+// 跳转历史记录页
+const goHistory = () => {
+  router.push('/history')
+}
 
 // 监听日期变化,自动计算旅行天数
 watch([() => formData.start_date, () => formData.end_date], ([start, end]) => {
@@ -290,8 +332,9 @@ const handleSubmit = async () => {
     loadingStatus.value = '✅ 完成!'
 
     if (response.success && response.data) {
-      // 保存到sessionStorage
+      // 保存到sessionStorage (并清除历史编辑标识, 新规划不受历史影响)
       sessionStorage.setItem('tripPlan', JSON.stringify(response.data))
+      sessionStorage.removeItem('tripPlanId')
 
       message.success('旅行计划生成成功!')
 
@@ -318,10 +361,30 @@ const handleSubmit = async () => {
 <style scoped>
 .home-container {
   min-height: 100vh;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: transparent;
   padding: 60px 20px;
   position: relative;
   overflow: hidden;
+}
+
+/* 历史行程入口按钮 */
+.history-entry {
+  position: fixed;
+  top: 20px;
+  right: 24px;
+  z-index: 10;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.92);
+  border: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  font-weight: 500;
+  transition: all 0.3s ease;
+  backdrop-filter: blur(10px);
+}
+
+.history-entry:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
 }
 
 /* 背景装饰 */
@@ -343,27 +406,30 @@ const handleSubmit = async () => {
 }
 
 .circle-1 {
-  width: 300px;
-  height: 300px;
+  width: 320px;
+  height: 320px;
   top: -100px;
   left: -100px;
   animation-delay: 0s;
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.28), transparent 70%);
 }
 
 .circle-2 {
-  width: 200px;
-  height: 200px;
+  width: 240px;
+  height: 240px;
   top: 50%;
-  right: -50px;
+  right: -60px;
   animation-delay: 5s;
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.24), transparent 70%);
 }
 
 .circle-3 {
-  width: 150px;
-  height: 150px;
-  bottom: -50px;
+  width: 180px;
+  height: 180px;
+  bottom: -60px;
   left: 30%;
   animation-delay: 10s;
+  background: radial-gradient(circle, rgba(16, 185, 129, 0.2), transparent 70%);
 }
 
 @keyframes float {
@@ -378,10 +444,64 @@ const handleSubmit = async () => {
 /* 页面标题 */
 .page-header {
   text-align: center;
-  margin-bottom: 50px;
+  margin-bottom: 40px;
   animation: fadeInDown 0.8s ease-out;
   position: relative;
   z-index: 1;
+}
+
+/* 品牌徽标 */
+.brand-badge {
+  display: inline-block;
+  padding: 6px 18px;
+  margin-bottom: 24px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  color: #667eea;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+}
+
+/* 热门目的地快捷选择 */
+.hot-cities {
+  margin-top: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.hot-label {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.9);
+  margin-right: 4px;
+}
+
+.hot-city-tag {
+  padding: 4px 16px;
+  border-radius: 18px;
+  font-size: 14px;
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  cursor: pointer;
+  transition: all 0.25s ease;
+  user-select: none;
+}
+
+.hot-city-tag:hover {
+  background: rgba(255, 255, 255, 0.3);
+  transform: translateY(-2px);
+}
+
+.hot-city-tag.active {
+  background: #fff;
+  color: #667eea;
+  font-weight: 600;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
 .icon-wrapper {
@@ -406,30 +526,46 @@ const handleSubmit = async () => {
 .page-title {
   font-size: 56px;
   font-weight: 800;
-  color: #ffffff;
   margin-bottom: 16px;
-  text-shadow: 3px 3px 6px rgba(0, 0, 0, 0.3);
   letter-spacing: 2px;
+  /* 霓虹渐变文字 */
+  background: linear-gradient(135deg, #a5b4fc 0%, #e0e7ff 40%, #c4b5fd 70%, #99f6e4 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 4px 18px rgba(139, 92, 246, 0.45));
 }
 
 .page-subtitle {
   font-size: 20px;
-  color: rgba(255, 255, 255, 0.95);
+  color: rgba(226, 232, 255, 0.85);
   margin: 0;
   font-weight: 300;
 }
 
-/* 表单卡片 */
+/* 表单卡片 (玻璃拟态) */
 .form-card {
-  max-width: 1400px;
+  max-width: 1000px;
   margin: 0 auto;
   border-radius: 24px;
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 30px 80px rgba(2, 6, 23, 0.5);
   animation: fadeInUp 0.8s ease-out;
   position: relative;
   z-index: 1;
-  backdrop-filter: blur(10px);
-  background: rgba(255, 255, 255, 0.98) !important;
+  backdrop-filter: blur(20px) saturate(150%);
+  background: rgba(255, 255, 255, 0.93) !important;
+  border: 1px solid rgba(255, 255, 255, 0.55) !important;
+}
+
+/* 底部品牌信息 */
+.home-footer {
+  text-align: center;
+  margin-top: 40px;
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 13px;
+  letter-spacing: 0.5px;
+  position: relative;
+  z-index: 1;
 }
 
 /* 表单分区 */

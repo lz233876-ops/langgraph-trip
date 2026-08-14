@@ -69,13 +69,31 @@
           <div class="left-info">
             <!-- 行程概览 -->
             <a-card id="overview" :title="`${tripPlan.city}旅行计划`" :bordered="false" class="overview-card">
+              <template #extra>
+                <span class="overview-days">{{ tripPlan.days.length }} 天行程</span>
+              </template>
               <div class="overview-content">
                 <div class="info-item">
-                  <span class="info-label">📅 日期:</span>
+                  <span class="info-label">📅 日期</span>
                   <span class="info-value">{{ tripPlan.start_date }} 至 {{ tripPlan.end_date }}</span>
                 </div>
+                <!-- 行程统计 -->
+                <div class="overview-stats">
+                  <div class="stat-box">
+                    <div class="stat-num">{{ tripPlan.days.length }}</div>
+                    <div class="stat-label">天行程</div>
+                  </div>
+                  <div class="stat-box">
+                    <div class="stat-num">{{ totalAttractions }}</div>
+                    <div class="stat-label">个景点</div>
+                  </div>
+                  <div class="stat-box">
+                    <div class="stat-num">¥{{ formatMoney(tripPlan.budget?.total || 0) }}</div>
+                    <div class="stat-label">预估总预算</div>
+                  </div>
+                </div>
                 <div class="info-item">
-                  <span class="info-label">💡 建议:</span>
+                  <span class="info-label">💡 旅行建议</span>
                   <span class="info-value">{{ tripPlan.overall_suggestions }}</span>
                 </div>
               </div>
@@ -86,24 +104,24 @@
               <div class="budget-grid">
                 <div class="budget-item">
                   <div class="budget-label">景点门票</div>
-                  <div class="budget-value">¥{{ tripPlan.budget.total_attractions }}</div>
+                  <div class="budget-value">¥{{ formatMoney(tripPlan.budget.total_attractions) }}</div>
                 </div>
                 <div class="budget-item">
                   <div class="budget-label">酒店住宿</div>
-                  <div class="budget-value">¥{{ tripPlan.budget.total_hotels }}</div>
+                  <div class="budget-value">¥{{ formatMoney(tripPlan.budget.total_hotels) }}</div>
                 </div>
                 <div class="budget-item">
                   <div class="budget-label">餐饮费用</div>
-                  <div class="budget-value">¥{{ tripPlan.budget.total_meals }}</div>
+                  <div class="budget-value">¥{{ formatMoney(tripPlan.budget.total_meals) }}</div>
                 </div>
                 <div class="budget-item">
                   <div class="budget-label">交通费用</div>
-                  <div class="budget-value">¥{{ tripPlan.budget.total_transportation }}</div>
+                  <div class="budget-value">¥{{ formatMoney(tripPlan.budget.total_transportation) }}</div>
                 </div>
               </div>
               <div class="budget-total">
                 <span class="total-label">预估总费用</span>
-                <span class="total-value">¥{{ tripPlan.budget.total }}</span>
+                <span class="total-value">¥{{ formatMoney(tripPlan.budget.total) }}</span>
               </div>
             </a-card>
           </div>
@@ -215,7 +233,7 @@
                       <div v-else>
                         <p><strong>地址:</strong> {{ item.address }}</p>
                         <p><strong>游览时长:</strong> {{ item.visit_duration }}分钟</p>
-                        <p><strong>描述:</strong> {{ item.description }}</p>
+                        <p><strong>描述:</strong> <span class="attraction-desc">{{ item.description }}</span></p>
                         <p v-if="item.rating"><strong>评分:</strong> {{ item.rating }}⭐</p>
                       </div>
                     </a-card>
@@ -254,7 +272,7 @@
           </a-collapse>
         </a-card>
 
-        <a-card id="weather" v-if="tripPlan.weather_info && tripPlan.weather_info.length > 0" title="天气信息" style="margin-top: 20px" :bordered="false">
+        <a-card id="weather" v-if="tripPlan.weather_info && tripPlan.weather_info.length > 0" title="🌤️ 天气信息" class="weather-section" :bordered="false">
         <a-list
           :data-source="tripPlan.weather_info"
           :grid="{ gutter: 16, column: 3 }"
@@ -308,7 +326,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, nextTick, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
@@ -316,6 +334,7 @@ import AMapLoader from '@amap/amap-jsapi-loader'
 import html2canvas from 'html2canvas'
 import jsPDF from 'jspdf'
 import type { TripPlan } from '@/types'
+import { updateHistory } from '@/services/api'
 
 const router = useRouter()
 const tripPlan = ref<TripPlan | null>(null)
@@ -324,12 +343,26 @@ const originalPlan = ref<TripPlan | null>(null)
 const attractionPhotos = ref<Record<string, string>>({})
 const activeSection = ref('overview')
 const activeDays = ref<number[]>([0]) // 默认展开第一天
+const historyRecordId = ref<number>(0) // 从历史打开时的记录 id (0=新规划)
 let map: any = null
+
+// 统计所有景点数量
+const totalAttractions = computed(() => {
+  if (!tripPlan.value) return 0
+  return tripPlan.value.days.reduce((sum, day) => sum + day.attractions.length, 0)
+})
+
+// 金额千分位格式化
+const formatMoney = (value: number): string => {
+  return (value || 0).toLocaleString('zh-CN')
+}
 
 onMounted(async () => {
   const data = sessionStorage.getItem('tripPlan')
   if (data) {
     tripPlan.value = JSON.parse(data)
+    // 历史打开时记录 id (供编辑保存写回数据库); 新规划则为 0
+    historyRecordId.value = Number(sessionStorage.getItem('tripPlanId') || '0')
     // 加载景点图片
     await loadAttractionPhotos()
     // 等待DOM渲染完成后初始化地图
@@ -345,10 +378,16 @@ const goBack = () => {
 // 滚动到指定区域
 const scrollToSection = ({ key }: { key: string }) => {
   activeSection.value = key
-  const element = document.getElementById(key)
-  if (element) {
-    element.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  // 每日行程: 先展开对应面板再滚动定位
+  if (key.startsWith('day-')) {
+    const dayIndex = Number(key.replace('day-', ''))
+    activeDays.value = [dayIndex]
+    nextTick(() => {
+      document.getElementById(key)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+    return
   }
+  document.getElementById(key)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 // 切换编辑模式
@@ -360,13 +399,23 @@ const toggleEditMode = () => {
 }
 
 // 保存修改
-const saveChanges = () => {
+const saveChanges = async () => {
   editMode.value = false
-  // 更新sessionStorage
+  // 更新sessionStorage (始终保留当前渲染数据)
   if (tripPlan.value) {
     sessionStorage.setItem('tripPlan', JSON.stringify(tripPlan.value))
   }
-  message.success('修改已保存')
+  // 从历史打开时: 把编辑结果持久化回数据库, 下次打开历史仍是编辑后的内容
+  if (historyRecordId.value && tripPlan.value) {
+    try {
+      await updateHistory(historyRecordId.value, tripPlan.value)
+      message.success('修改已保存到历史记录')
+    } catch (error: any) {
+      message.error(error.message || '保存失败, 修改仅保留在本地')
+    }
+  } else {
+    message.success('修改已保存')
+  }
 
   // 重新初始化地图以反映更改
   if (map) {
@@ -786,49 +835,6 @@ const exportAsPDF = async () => {
   }
 }
 
-// 截取地图图片
-const captureMapImage = async () => {
-  if (!map) return
-
-  try {
-    // 获取地图容器
-    const mapContainer = document.getElementById('amap-container')
-    if (!mapContainer) return
-
-    // 使用高德地图的截图功能
-    const mapCanvas = mapContainer.querySelector('canvas')
-    if (mapCanvas) {
-      // 创建一个img元素替换地图容器
-      const img = document.createElement('img')
-      img.src = mapCanvas.toDataURL('image/png')
-      img.style.width = '100%'
-      img.style.height = '500px'
-      img.style.objectFit = 'cover'
-      img.id = 'map-snapshot'
-
-      // 隐藏原地图,显示截图
-      mapContainer.style.display = 'none'
-      mapContainer.parentElement?.appendChild(img)
-    }
-  } catch (error) {
-    console.error('截取地图失败:', error)
-  }
-}
-
-// 恢复地图
-const restoreMap = () => {
-  const mapContainer = document.getElementById('amap-container')
-  const snapshot = document.getElementById('map-snapshot')
-
-  if (mapContainer) {
-    mapContainer.style.display = 'block'
-  }
-
-  if (snapshot) {
-    snapshot.remove()
-  }
-}
-
 // 初始化地图
 const initMap = async () => {
   try {
@@ -959,7 +965,7 @@ const drawRoutes = (AMap: any, attractions: any[]) => {
 <style scoped>
 .result-container {
   min-height: 100vh;
-  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  background: transparent;
   padding: 40px 20px;
 }
 
@@ -992,8 +998,10 @@ const drawRoutes = (AMap: any, attractions: any[]) => {
 
 .side-nav :deep(.ant-menu) {
   border-radius: 12px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-  background: white;
+  background: rgba(255, 255, 255, 0.93);
+  backdrop-filter: blur(16px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 0 12px 36px rgba(2, 6, 23, 0.35);
 }
 
 .side-nav :deep(.ant-menu-item) {
@@ -1022,6 +1030,14 @@ const drawRoutes = (AMap: any, attractions: any[]) => {
   margin-bottom: 12px;
   border-radius: 8px;
   overflow: hidden;
+}
+
+/* 景点描述: 保留换行, 展示知识库多行详情 (门票/开放时间/交通/避坑) */
+.attraction-desc {
+  white-space: pre-line;
+  color: #666;
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .attraction-image {
@@ -1179,10 +1195,47 @@ const drawRoutes = (AMap: any, attractions: any[]) => {
   height: fit-content;
 }
 
+.overview-days {
+  color: #667eea;
+  font-weight: 600;
+  font-size: 13px;
+  background: rgba(102, 126, 234, 0.1);
+  padding: 4px 12px;
+  border-radius: 12px;
+}
+
 .overview-content {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* 概览统计 */
+.overview-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin: 4px 0;
+}
+
+.stat-box {
+  text-align: center;
+  padding: 12px 4px;
+  background: linear-gradient(135deg, #f5f7fa 0%, #ffffff 100%);
+  border-radius: 10px;
+  border: 1px solid #e8e8e8;
+}
+
+.stat-num {
+  font-size: 20px;
+  font-weight: 700;
+  color: #667eea;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: #999;
+  margin-top: 2px;
 }
 
 .info-item {
@@ -1268,6 +1321,11 @@ const drawRoutes = (AMap: any, attractions: any[]) => {
 
 /* 每日行程卡片 */
 .days-card {
+  margin-top: 20px;
+}
+
+/* 天气信息卡片 */
+.weather-section {
   margin-top: 20px;
 }
 
