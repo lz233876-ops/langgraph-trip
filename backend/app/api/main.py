@@ -1,5 +1,6 @@
 """FastAPI主应用"""
 import logging
+import sys
 import time
 from contextlib import asynccontextmanager
 
@@ -12,6 +13,12 @@ from ..core.logging import setup_logging
 from ..core.exceptions import BizException, biz_exception_handler, global_exception_handler
 from ..db.database import init_db
 from .routes import trip, poi, map as map_routes, history, rag
+
+# Windows 控制台默认 GBK 编码, 打印 emoji 横幅会抛 UnicodeEncodeError 使 lifespan 启动崩溃。
+# reload 模式下子进程会重新 import 本模块, 因此在此处强制标准流 UTF-8(errors=replace 兜底, 绝不因编码中断启动)。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 # 初始化日志(幂等): 控制台 + 文件落盘。
 # 必须在 uvicorn 重配日志之前执行; reload 模式下子进程重新 import 本模块时也会执行, 保证任意模式日志可用。

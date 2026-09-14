@@ -23,8 +23,7 @@ dist-ssr
 *.sln
 *.sw?
 
-# Environment
-.env
-.env.local
-.env.*.local
+# Environment: 通配忽略所有 .env* (含 .env.prod/.env.bak 等), 仅放行不含真实值的模板
+.env*
+!.env.example
 

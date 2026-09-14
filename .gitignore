@@ -1,4 +1,10 @@
 # IDE
 .idea/
 .vscode/
+.claude/
 *.iml
+
+# OS
+Thumbs.db
+desktop.ini
+

@@ -26,9 +26,9 @@ env/
 ENV/
 .venv
 
-# 环境变量
-.env
-.env.local
+# 环境变量: 通配忽略所有 .env* (含 .env.prod/.env.bak 等), 仅放行不含真实值的模板
+.env*
+!.env.example
 
 # IDE
 .vscode/
