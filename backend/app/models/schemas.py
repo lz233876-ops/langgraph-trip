@@ -153,11 +153,26 @@ class TripPlan(BaseModel):
     budget: Optional[Budget] = Field(default=None, description="预算信息")
 
 
+class TokenUsage(BaseModel):
+    """单次 LLM 调用的 token 用量"""
+    input_tokens: int = Field(default=0, description="输入(提示词)token 数")
+    output_tokens: int = Field(default=0, description="输出(生成)token 数")
+    total_tokens: int = Field(default=0, description="总 token 数")
+
+
+class TripUsage(BaseModel):
+    """一次行程规划的 LLM 用量汇总 (含自纠错重试)"""
+    token_usage: TokenUsage = Field(default_factory=TokenUsage, description="token 用量合计")
+    llm_calls: int = Field(default=0, description="LLM 调用次数(含重试)")
+    llm_duration_ms: int = Field(default=0, description="LLM 累计耗时(毫秒)")
+
+
 class TripPlanResponse(BaseModel):
     """旅行计划响应"""
     success: bool = Field(..., description="是否成功")
     message: str = Field(default="", description="消息")
     data: Optional[TripPlan] = Field(default=None, description="旅行计划数据")
+    usage: Optional[TripUsage] = Field(default=None, description="本次生成的 LLM 用量")
 
 
 class POIInfo(BaseModel):

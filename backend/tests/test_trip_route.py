@@ -13,6 +13,7 @@ from app.models.schemas import (
     Location,
     Budget,
     WeatherInfo,
+    TripUsage,
 )
 
 
@@ -71,7 +72,7 @@ VALID_REQUEST = {
 def test_plan_trip_success(client, monkeypatch):
     """正常生成旅行计划"""
     fake_agent = Mock()
-    fake_agent.plan_trip.return_value = make_fake_trip_plan()
+    fake_agent.plan_trip.return_value = (make_fake_trip_plan(), TripUsage())
     monkeypatch.setattr(
         "app.api.routes.trip.get_trip_planner_agent", lambda: fake_agent
     )
@@ -84,6 +85,7 @@ def test_plan_trip_success(client, monkeypatch):
     assert data["data"]["city"] == "北京"
     assert len(data["data"]["days"]) == 2
     assert data["data"]["budget"]["total"] == 400
+    assert data["usage"]["token_usage"]["total_tokens"] == 0
 
 
 def test_plan_trip_invalid_days(client):

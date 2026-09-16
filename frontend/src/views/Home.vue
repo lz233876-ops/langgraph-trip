@@ -334,6 +334,7 @@ const handleSubmit = async () => {
     if (response.success && response.data) {
       // 保存到sessionStorage (并清除历史编辑标识, 新规划不受历史影响)
       sessionStorage.setItem('tripPlan', JSON.stringify(response.data))
+      sessionStorage.setItem('tripUsage', JSON.stringify(response.usage || null))
       sessionStorage.removeItem('tripPlanId')
 
       message.success('旅行计划生成成功!')

@@ -3,8 +3,9 @@
 import json
 import logging
 import re
+import time
 from datetime import datetime, timedelta
-from typing import TypedDict, List
+from typing import TypedDict, List, Tuple
 from langgraph.graph import StateGraph, START, END
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -21,6 +22,8 @@ from ..models.schemas import (
     Budget,
     WeatherInfo,
     POIInfo,
+    TokenUsage,
+    TripUsage,
 )
 
 logger = logging.getLogger(__name__)
@@ -109,6 +112,9 @@ class GraphState(TypedDict, total=False):
     hotel_pois: List[POIInfo]          # 酒店搜索结果
     trip_plan: TripPlan                # 最终行程计划
     error: bool                        # 是否出错(用于条件路由)
+    token_usage: TokenUsage            # LLM token 用量合计(含重试)
+    llm_calls: int                     # LLM 调用次数
+    llm_duration_ms: int               # LLM 累计耗时(毫秒)
 
 
 class MultiAgentTripPlanner:
@@ -196,21 +202,40 @@ class MultiAgentTripPlanner:
         """
         request = state["request"]
         logger.info("📋 步骤4: LLM 生成行程计划...")
+        token_usage = TokenUsage()
+        llm_calls = 0
+        llm_duration_ms = 0
         try:
             planner_query = self._build_planner_query(request, state)
             prompt_template = ChatPromptTemplate.from_messages([
                 ("system", PLANNER_SYSTEM_PROMPT),
                 ("human", "{query}"),
             ])
-            chain = prompt_template | self.llm 
+            chain = prompt_template | self.llm
 
             for attempt in range(2):
+                start = time.perf_counter()
                 response = chain.invoke({"query": planner_query})
+                llm_calls += 1
+                llm_duration_ms += int((time.perf_counter() - start) * 1000)
+                usage = self._extract_token_usage(response)
+                token_usage = TokenUsage(
+                    input_tokens=token_usage.input_tokens + usage.input_tokens,
+                    output_tokens=token_usage.output_tokens + usage.output_tokens,
+                    total_tokens=token_usage.total_tokens + usage.total_tokens,
+                )
+
                 content = response.content if hasattr(response, "content") else str(response)
                 try:
                     trip_plan = self._parse_json_response(content)
-                    logger.info("   ✅ 行程计划生成成功")
-                    return {"trip_plan": trip_plan, "error": False}
+                    logger.info(f"   ✅ 行程计划生成成功 (第{llm_calls}次调用)")
+                    return {
+                        "trip_plan": trip_plan,
+                        "error": False,
+                        "token_usage": token_usage,
+                        "llm_calls": llm_calls,
+                        "llm_duration_ms": llm_duration_ms,
+                    }
                 except Exception as e:
                     logger.warning(f"   ⚠️ 第{attempt + 1}次解析失败: {str(e)[:100]}")
                     # 自纠错: 把校验错误反馈给LLM, 要求重新生成
@@ -224,7 +249,12 @@ class MultiAgentTripPlanner:
             raise ValueError("两次尝试均未能生成合法行程计划")
         except Exception as e:
             logger.warning(f"   ⚠️ LLM 生成行程失败: {e}")
-            return {"error": True}
+            return {
+                "error": True,
+                "token_usage": token_usage,
+                "llm_calls": llm_calls,
+                "llm_duration_ms": llm_duration_ms,
+            }
 
     def _fallback_plan(self, state: GraphState) -> dict:
         """节点5: 备用计划 (LLM失败时兜底)"""
@@ -264,14 +294,14 @@ class MultiAgentTripPlanner:
 
     # ============ 对外接口 ============
 
-    def plan_trip(self, request: TripRequest) -> TripPlan:
+    def plan_trip(self, request: TripRequest) -> Tuple[TripPlan, TripUsage]:
         """使用 LangGraph 工作流生成旅行计划
 
         Args:
             request: 旅行请求
 
         Returns:
-            旅行计划
+            (旅行计划, LLM 用量汇总)
         """
         logger.info(f"\n{'='*60}")
         logger.info(f"🚀 开始 LangGraph 工作流规划旅行...")
@@ -281,6 +311,13 @@ class MultiAgentTripPlanner:
 
         result = self.graph.invoke({"request": request})
         trip_plan = result["trip_plan"]
+
+        # LLM 用量汇总 (走备用计划/未调用LLM时为 0)
+        usage = TripUsage(
+            token_usage=result.get("token_usage") or TokenUsage(),
+            llm_calls=result.get("llm_calls", 0),
+            llm_duration_ms=result.get("llm_duration_ms", 0),
+        )
 
         # 天气: 用高德真实天气覆盖LLM生成的天气。
         # LLM 常因日期不足而把天气字段输出 null/0, 导致前端温度全显示0;
@@ -308,8 +345,14 @@ class MultiAgentTripPlanner:
 
         logger.info(f"\n{'='*60}")
         logger.info(f"✅ 旅行计划生成完成! 天数: {len(trip_plan.days)}")
+        logger.info(
+            f"📊 LLM 用量: {usage.llm_calls} 次调用 | "
+            f"tokens={usage.token_usage.total_tokens} "
+            f"(输入 {usage.token_usage.input_tokens} / 输出 {usage.token_usage.output_tokens}) | "
+            f"耗时 {usage.llm_duration_ms}ms"
+        )
         logger.info(f"{'='*60}\n")
-        return trip_plan
+        return trip_plan, usage
 
     def get_agent_info(self) -> dict:
         """Agent 信息 (供健康检查使用)"""
@@ -320,6 +363,26 @@ class MultiAgentTripPlanner:
         }
 
     # ============ 内部工具方法 ============
+
+    @staticmethod
+    def _extract_token_usage(response) -> TokenUsage:
+        """从 LLM 响应(AIMessage)中提取 token 用量
+
+        兼容新旧 langchain-openai 两种格式:
+        - 新版: response.usage_metadata (dict: input_tokens/output_tokens/total_tokens)
+        - 旧版: response.response_metadata["token_usage"]
+        某些端点不返回 usage 时, 各字段兜底为 0。
+        """
+        usage = getattr(response, "usage_metadata", None)
+        if not usage:
+            meta = getattr(response, "response_metadata", None) or {}
+            usage = meta.get("token_usage") or {}
+        # 兼容两种字段命名: 新版 input/output_tokens, 旧版 OpenAI 风格 prompt/completion_tokens
+        return TokenUsage(
+            input_tokens=usage.get("input_tokens", usage.get("prompt_tokens", 0)),
+            output_tokens=usage.get("output_tokens", usage.get("completion_tokens", 0)),
+            total_tokens=usage.get("total_tokens", 0),
+        )
 
     @staticmethod
     def _parse_json_response(content: str) -> TripPlan:

@@ -56,6 +56,15 @@ def get_history(record_id: int, db: Session = Depends(get_db)):
             "free_text_input": record.free_text_input,
             "plan": json.loads(record.plan_json),
             "created_at": record.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "usage": {
+                "token_usage": {
+                    "input_tokens": record.input_tokens,
+                    "output_tokens": record.output_tokens,
+                    "total_tokens": record.total_tokens,
+                },
+                "llm_calls": record.llm_calls,
+                "llm_duration_ms": record.llm_duration_ms,
+            },
         },
     }
 

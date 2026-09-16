@@ -8,15 +8,19 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from ..db.models import TripRecord
-from ..models.schemas import TripPlan, TripRequest
+from ..models.schemas import TripPlan, TripRequest, TripUsage
 
 logger = logging.getLogger(__name__)
 
 
 def create_trip_record(
-    db: Session, request: TripRequest, trip_plan: TripPlan
+    db: Session,
+    request: TripRequest,
+    trip_plan: TripPlan,
+    usage: Optional[TripUsage] = None,
 ) -> TripRecord:
     """保存一条旅行计划历史记录 (行程生成成功后调用)"""
+    usage = usage or TripUsage()
     record = TripRecord(
         city=request.city,
         start_date=request.start_date,
@@ -27,6 +31,11 @@ def create_trip_record(
         preferences=json.dumps(request.preferences, ensure_ascii=False),
         free_text_input=request.free_text_input or "",
         plan_json=trip_plan.model_dump_json(),
+        input_tokens=usage.token_usage.input_tokens,
+        output_tokens=usage.token_usage.output_tokens,
+        total_tokens=usage.token_usage.total_tokens,
+        llm_calls=usage.llm_calls,
+        llm_duration_ms=usage.llm_duration_ms,
     )
     db.add(record)
     db.commit()
@@ -108,4 +117,6 @@ def trip_record_to_summary(record: TripRecord) -> dict:
             len(day.get("attractions", [])) for day in plan.get("days", [])
         ),
         "budget_total": (plan.get("budget") or {}).get("total", 0),
+        "total_tokens": record.total_tokens,
+        "llm_duration_ms": record.llm_duration_ms,
     }

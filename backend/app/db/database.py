@@ -49,7 +49,28 @@ def ensure_tables() -> None:
     from . import models  # noqa: F401  确保模型注册到 Base.metadata
 
     Base.metadata.create_all(bind=engine)
+    _migrate()
     _tables_ready = True
+
+
+def _migrate() -> None:
+    """轻量迁移: 为已存在的 trip_records 表补齐新增列
+
+    SQLite 的 ALTER TABLE 不支持 ADD COLUMN IF NOT EXISTS, create_all 又不会改已有表,
+    因此新增列(如 LLM token 用量)后, 老库需手动逐列补齐, 否则插入会报 no such column。
+    """
+    new_columns = {
+        "input_tokens": "INTEGER NOT NULL DEFAULT 0",
+        "output_tokens": "INTEGER NOT NULL DEFAULT 0",
+        "total_tokens": "INTEGER NOT NULL DEFAULT 0",
+        "llm_calls": "INTEGER NOT NULL DEFAULT 0",
+        "llm_duration_ms": "INTEGER NOT NULL DEFAULT 0",
+    }
+    with engine.begin() as conn:
+        existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(trip_records)")}
+        for col, ddl in new_columns.items():
+            if col not in existing:
+                conn.exec_driver_sql(f"ALTER TABLE trip_records ADD COLUMN {col} {ddl}")
 
 
 def init_db() -> None:

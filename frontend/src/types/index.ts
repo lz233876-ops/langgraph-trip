@@ -87,9 +87,22 @@ export interface TripFormData {
   free_text_input: string
 }
 
+export interface TokenUsage {
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+}
+
+export interface TripUsage {
+  token_usage: TokenUsage
+  llm_calls: number
+  llm_duration_ms: number
+}
+
 export interface TripPlanResponse {
   success: boolean
   message: string
   data?: TripPlan
+  usage?: TripUsage
 }
 

@@ -49,11 +49,11 @@ def plan_trip(request: TripRequest, db: Session = Depends(get_db)):
 
     # 获取Agent实例并生成旅行计划 (异常由全局异常处理器统一兜底)
     agent = get_trip_planner_agent()
-    trip_plan = agent.plan_trip(request)
+    trip_plan, usage = agent.plan_trip(request)
 
     # 生成成功 → 保存历史 + RAG 入库 (失败仅告警, 不影响主流程)
     try:
-        record = history_service.create_trip_record(db, request, trip_plan)
+        record = history_service.create_trip_record(db, request, trip_plan, usage)
         get_rag_service().add_history_plan(record.id, request, trip_plan)
     except Exception as e:
         logger.warning(f"⚠️ 历史记录/RAG 保存失败(不影响行程): {e}")
@@ -62,6 +62,7 @@ def plan_trip(request: TripRequest, db: Session = Depends(get_db)):
         success=True,
         message="旅行计划生成成功",
         data=trip_plan,
+        usage=usage,
     )
 
 

@@ -44,6 +44,7 @@
             <span class="meta-item">📅 {{ record.start_date }} ~ {{ record.end_date }}</span>
             <span class="meta-item">🎯 {{ record.attraction_count }} 个景点</span>
             <span class="meta-item" v-if="record.budget_total">💰 ¥{{ record.budget_total.toLocaleString() }}</span>
+            <span class="meta-item" v-if="record.total_tokens">🪙 {{ record.total_tokens.toLocaleString() }} tokens</span>
             <span class="meta-item">🕐 {{ record.created_at }}</span>
           </div>
           <div class="record-prefs" v-if="record.preferences && record.preferences.length">
@@ -145,6 +146,7 @@ const viewRecord = async (id: number) => {
     if (resp.success && resp.data.plan) {
       sessionStorage.setItem('tripPlan', JSON.stringify(resp.data.plan))
       sessionStorage.setItem('tripPlanId', String(id))
+      sessionStorage.setItem('tripUsage', JSON.stringify(resp.data.usage || null))
       router.push('/result')
     } else {
       message.error('记录数据异常')

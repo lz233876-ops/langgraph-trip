@@ -26,6 +26,12 @@ class TripRecord(Base):
     preferences: Mapped[str] = mapped_column(Text, default="[]")  # JSON 数组字符串
     free_text_input: Mapped[str] = mapped_column(Text, default="")
     plan_json: Mapped[str] = mapped_column(Text)  # 完整行程计划 JSON
+    # LLM 用量监测 (生成时的 token 用量与耗时, 供历史记录回看成本)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    llm_calls: Mapped[int] = mapped_column(Integer, default=0)
+    llm_duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), index=True
     )

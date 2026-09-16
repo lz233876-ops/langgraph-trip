@@ -46,6 +46,9 @@
             <a-menu-item key="budget" v-if="tripPlan.budget">
               <span>💰 预算明细</span>
             </a-menu-item>
+            <a-menu-item key="usage" v-if="tripUsage">
+              <span>📊 AI 用量</span>
+            </a-menu-item>
             <a-menu-item key="map">
               <span>📍 景点地图</span>
             </a-menu-item>
@@ -95,6 +98,32 @@
                 <div class="info-item">
                   <span class="info-label">💡 旅行建议</span>
                   <span class="info-value">{{ tripPlan.overall_suggestions }}</span>
+                </div>
+              </div>
+            </a-card>
+
+            <!-- AI 用量: 本次规划的 token 消耗与耗时 -->
+            <a-card id="usage" v-if="tripUsage" title="📊 AI 用量" :bordered="false" class="usage-card">
+              <div class="usage-grid">
+                <div class="usage-item">
+                  <div class="usage-value">{{ tripUsage.token_usage.input_tokens.toLocaleString() }}</div>
+                  <div class="usage-label">输入 Token</div>
+                </div>
+                <div class="usage-item">
+                  <div class="usage-value">{{ tripUsage.token_usage.output_tokens.toLocaleString() }}</div>
+                  <div class="usage-label">输出 Token</div>
+                </div>
+                <div class="usage-item usage-item--total">
+                  <div class="usage-value">{{ tripUsage.token_usage.total_tokens.toLocaleString() }}</div>
+                  <div class="usage-label">总 Token</div>
+                </div>
+                <div class="usage-item">
+                  <div class="usage-value">{{ tripUsage.llm_calls }}</div>
+                  <div class="usage-label">调用次数</div>
+                </div>
+                <div class="usage-item">
+                  <div class="usage-value">{{ llmDurationSeconds }}s</div>
+                  <div class="usage-label">耗时</div>
                 </div>
               </div>
             </a-card>
@@ -333,7 +362,7 @@ import { DownOutlined } from '@ant-design/icons-vue'
 import AMapLoader from '@amap/amap-jsapi-loader'
 import html2canvas from 'html2canvas'
 import jsPDF from 'jspdf'
-import type { TripPlan } from '@/types'
+import type { TripPlan, TripUsage } from '@/types'
 import { updateHistory } from '@/services/api'
 
 const router = useRouter()
@@ -344,6 +373,7 @@ const attractionPhotos = ref<Record<string, string>>({})
 const activeSection = ref('overview')
 const activeDays = ref<number[]>([0]) // 默认展开第一天
 const historyRecordId = ref<number>(0) // 从历史打开时的记录 id (0=新规划)
+const tripUsage = ref<TripUsage | null>(null) // 本次规划的 LLM token 用量
 let map: any = null
 
 // 统计所有景点数量
@@ -357,12 +387,26 @@ const formatMoney = (value: number): string => {
   return (value || 0).toLocaleString('zh-CN')
 }
 
+// LLM 耗时(秒, 保留1位小数)
+const llmDurationSeconds = computed(() => {
+  return ((tripUsage.value?.llm_duration_ms || 0) / 1000).toFixed(1)
+})
+
 onMounted(async () => {
   const data = sessionStorage.getItem('tripPlan')
   if (data) {
     tripPlan.value = JSON.parse(data)
     // 历史打开时记录 id (供编辑保存写回数据库); 新规划则为 0
     historyRecordId.value = Number(sessionStorage.getItem('tripPlanId') || '0')
+    // LLM 用量 (新规划来自响应, 历史打开来自详情接口)
+    const usageData = sessionStorage.getItem('tripUsage')
+    if (usageData) {
+      try {
+        tripUsage.value = JSON.parse(usageData)
+      } catch {
+        tripUsage.value = null
+      }
+    }
     // 加载景点图片
     await loadAttractionPhotos()
     // 等待DOM渲染完成后初始化地图
@@ -1259,6 +1303,48 @@ const drawRoutes = (AMap: any, attractions: any[]) => {
 /* 预算卡片 */
 .budget-card {
   height: fit-content;
+}
+
+/* AI 用量卡片 */
+.usage-card {
+  height: fit-content;
+}
+
+.usage-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.usage-item {
+  text-align: center;
+  padding: 12px;
+  background: linear-gradient(135deg, #f5f7fa 0%, #ffffff 100%);
+  border-radius: 8px;
+  border: 1px solid #e8e8e8;
+}
+
+.usage-item--total {
+  grid-column: span 2;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border: none;
+}
+
+.usage-item--total .usage-value,
+.usage-item--total .usage-label {
+  color: white;
+}
+
+.usage-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: #667eea;
+}
+
+.usage-label {
+  font-size: 12px;
+  color: #999;
+  margin-top: 4px;
 }
 
 .budget-grid {
