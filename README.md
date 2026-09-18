@@ -76,7 +76,7 @@
 ## 📁 项目结构
 
 ```
-langchain-trip-planner/
+langgraph-trip/
 ├── backend/                        # 后端服务
 │   ├── app/
 │   │   ├── agents/                # LangGraph 智能体编排
