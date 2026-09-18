@@ -1,0 +1,32 @@
+[
+  {
+    "query": "故宫门票多少钱",
+    "city": "北京",
+    "relevant": [{ "source": "beijing.md", "contains": "故宫" }]
+  },
+  {
+    "query": "八达岭长城怎么去",
+    "city": "北京",
+    "relevant": [{ "source": "beijing.md", "contains": "长城" }]
+  },
+  {
+    "query": "外滩有什么好玩的",
+    "city": "上海",
+    "relevant": [{ "source": "shanghai.md", "contains": "外滩" }]
+  },
+  {
+    "query": "上海迪士尼门票多少",
+    "city": "上海",
+    "relevant": [{ "source": "shanghai.md", "contains": "迪士尼" }]
+  },
+  {
+    "query": "深圳世界之窗门票",
+    "city": "深圳",
+    "relevant": [{ "source": "shenzhen.md", "contains": "世界之窗" }]
+  },
+  {
+    "query": "广州小蛮腰怎么去",
+    "city": "广州",
+    "relevant": [{ "source": "guangzhou.md", "contains": "小蛮腰" }]
+  }
+]

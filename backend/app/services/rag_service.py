@@ -244,23 +244,38 @@ class RagService:
 
     # ============ 检索 ============
 
+    def retrieve_documents(self, query: str, city: Optional[str] = None, k: int = 3) -> List[Document]:
+        """检索并返回原始 Document (带 metadata.source), 供评测脚本计算召回率
+
+        与 retrieve 的检索逻辑完全一致, 只是不拼字符串、不丢来源信息。
+        """
+        if not self.enabled:
+            return []
+        docs: List[Document] = []
+        try:
+            # 1. 城市知识库 (限定城市, 相关性最高)
+            if city:
+                docs.extend(
+                    self._knowledge_store.similarity_search(
+                        query, k=k, filter={"city": city}
+                    )
+                )
+            # 2. 历史行程 (跨城市, 风格参考)
+            docs.extend(self._history_store.similarity_search(query, k=2))
+        except Exception as e:
+            logger.warning(f"⚠️  RAG 检索失败: {e}")
+        return docs
+
     def retrieve(self, query: str, city: Optional[str] = None, k: int = 3) -> List[str]:
         """检索知识库 + 历史行程, 返回匹配文本片段"""
         if not self.enabled:
             return []
         results: List[str] = []
-        try:
-            # 1. 城市知识库 (限定城市, 相关性最高)
-            if city:
-                docs = self._knowledge_store.similarity_search(
-                    query, k=k, filter={"city": city}
-                )
-                results.extend(f"[知识库-{doc.metadata.get('city')}] {doc.page_content}" for doc in docs)
-            # 2. 历史行程 (跨城市, 风格参考)
-            docs = self._history_store.similarity_search(query, k=2)
-            results.extend(f"[历史行程] {doc.page_content}" for doc in docs)
-        except Exception as e:
-            logger.warning(f"⚠️  RAG 检索失败: {e}")
+        for doc in self.retrieve_documents(query, city=city, k=k):
+            if "record_id" in doc.metadata:
+                results.append(f"[历史行程] {doc.page_content}")
+            else:
+                results.append(f"[知识库-{doc.metadata.get('city')}] {doc.page_content}")
         return results
 
     def build_rag_context(self, request: TripRequest, top_k: int = 3) -> str:
