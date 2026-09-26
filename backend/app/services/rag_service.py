@@ -16,7 +16,7 @@ import os
 import re
 from http import HTTPStatus
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings as LangChainEmbeddings
@@ -98,7 +98,10 @@ class RagService:
             chunk_overlap=50,
             separators=["\n## ", "\n### ", "\n- ", "\n", "。", "；", " "],
         )
+        # 景点详情本地映射 {城市: {景点名: 详情}}, 不依赖 embedding, 生成后精确回填用
+        self._attraction_details: Dict[str, Dict[str, str]] = {}
         self._init()
+        self._attraction_details = self._load_attraction_details()
 
     # ============ 初始化 ============
 
@@ -168,6 +171,52 @@ class RagService:
                 )
         return documents
 
+    def _load_attraction_details(self) -> Dict[str, Dict[str, str]]:
+        """解析 data/knowledge/*.md, 建立 {城市: {景点名: 详情}} 内存映射
+
+        景点详情按 `### 景点名` 标题切分, 供生成后精确回填使用, 不依赖 embedding
+        (未配置 DASHSCOPE_API_KEY 时也能工作)。单个文件解析失败仅告警并跳过。
+        """
+        details_map: Dict[str, Dict[str, str]] = {}
+        for md_path in sorted(KNOWLEDGE_DIR.glob("*.md")):
+            city = _CITY_NAME_MAP.get(md_path.stem, md_path.stem)
+            try:
+                content = md_path.read_text(encoding="utf-8")
+                details_map[city] = self._parse_attraction_details(content)
+            except Exception as e:
+                logger.warning(f"⚠️  知识库景点详情解析失败 ({md_path.name}): {e}")
+        return details_map
+
+    @staticmethod
+    def _parse_attraction_details(content: str) -> Dict[str, str]:
+        """从单个 md 文件解析 {景点名: 详情文本}
+
+        规则: `### 景点名` 开启一个景点段落, 遇到下一个 `##`/`###` 标题结束;
+        详情保留段落内非空内容行 (去掉标题行本身)。
+        """
+        details: Dict[str, str] = {}
+        current_name: Optional[str] = None
+        current_lines: List[str] = []
+
+        def _flush() -> None:
+            if current_name and current_lines:
+                details[current_name] = "\n".join(current_lines).strip()
+
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("### "):
+                _flush()
+                current_name = stripped[4:].strip()
+                current_lines = []
+            elif stripped.startswith("## "):
+                _flush()
+                current_name = None
+                current_lines = []
+            elif current_name is not None and stripped:
+                current_lines.append(stripped)
+        _flush()
+        return details
+
     def ensure_knowledge_index(self) -> bool:
         """确保知识索引存在 (空库时自动构建, 幂等)"""
         if not self.enabled:
@@ -181,6 +230,9 @@ class RagService:
 
     def build_knowledge_index(self) -> dict:
         """重建知识索引 (清空旧数据后重新索引)"""
+
+        # 本地景点详情缓存始终刷新 (不依赖 embedding, 无 key 时详情回填仍可用)
+        self._attraction_details = self._load_attraction_details()
 
          # ① RAG 没启用 → 直接报告"未启用"
         if not self.enabled:
@@ -318,12 +370,46 @@ class RagService:
             logger.warning(f"⚠️  知识库景点提取失败: {e}")
             return []
 
+    def _lookup_attraction_detail(self, name: str, city: str) -> str:
+        """在本地解析的景点详情映射中查找 (精确 → 去括号别名 → 双向子串)
+
+        返回命中的详情文本; 未命中返回空字符串。
+        """
+        details = self._attraction_details.get(city) or {}
+        if not details:
+            return ""
+        # 1. 精确匹配
+        if name in details:
+            return details[name]
+        # 2. 规范化后匹配: 去括号别名/空白, 兼容 "故宫" vs "故宫博物院（紫禁城）"
+        norm = self._normalize_name(name)
+        for key, text in details.items():
+            key_norm = self._normalize_name(key)
+            if not norm or not key_norm:
+                continue
+            if norm == key_norm or norm in key_norm or key_norm in norm:
+                return text
+        return ""
+
+    @staticmethod
+    def _normalize_name(name: str) -> str:
+        """规范化景点名: 去括号内容与空白, 便于别名匹配"""
+        name = re.sub(r"[（(].*?[)）]", "", name)  # 去掉全角/半角括号及其内容
+        return re.sub(r"\s+", "", name).strip()
+
     def get_attraction_rag_text(self, name: str, city: str, max_chars: int = 320) -> str:
         """检索知识库中某景点的详细信息 (门票/开放时间/交通/打卡/避坑)
 
         供行程生成后回填到景点描述, 让知识库内容真正落到前端每个景点上。
-        只取最相关的一段, 避免把其他景点的内容拼进来。
+        优先走本地精确/模糊匹配 (零 embedding 调用, 快且准, 不依赖 key);
+        未命中时退回向量检索兜底 (兼容知识库结构不规范的情况)。
         """
+        # 1. 本地精确/模糊匹配 (无 key 时也能回填详情)
+        detail = self._lookup_attraction_detail(name, city)
+        if detail:
+            return detail[:max_chars]
+
+        # 2. 向量检索兜底 (RAG 未启用时跳过)
         if not self.enabled:
             return ""
         try:
