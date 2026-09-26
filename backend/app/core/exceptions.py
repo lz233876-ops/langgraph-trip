@@ -32,9 +32,13 @@ async def biz_exception_handler(request: Request, exc: BizException):
 
 
 async def global_exception_handler(request: Request, exc: Exception):
-    """未捕获异常: 记完整堆栈到 error 日志 + 返回 500"""
+    """未捕获异常: 记完整堆栈到 error 日志 + 返回 500
+
+    只向前端返回通用提示, 不暴露内部异常详情(可能含数据库路径等敏感信息);
+    具体错误通过 logger.exception 写入 error.log 供排查。
+    """
     logger.exception(f"未捕获异常 (path={request.url.path}): {exc}")
     return JSONResponse(
         status_code=500,
-        content={"success": False, "message": f"服务器内部错误: {exc}"},
+        content={"success": False, "message": "服务器内部错误, 请稍后重试"},
     )

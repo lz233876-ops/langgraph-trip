@@ -1,6 +1,7 @@
 """高德地图服务封装 (httpx 直调高德 REST API)"""
 
 import logging
+import threading
 import time
 
 import httpx
@@ -33,6 +34,8 @@ class AmapService:
         self._photo_cache: Dict[str, tuple] = {}
         # QPS熔断时间戳: 触发CUQPS超限后, 该时间之前不再调用高德图片接口
         self._photo_blocked_until = 0.0
+        # 保护 _photo_cache / _photo_blocked_until 的读写锁 (同步端点在线程池并发执行)
+        self._photo_cache_lock = threading.Lock()
 
     def _get(self, path: str, params: Dict[str, Any]) -> dict:
         """GET 请求高德 API, 统一注入 key 并校验响应
@@ -207,6 +210,20 @@ class AmapService:
         data = self._get("/v3/geocode/geo", params)
         return data.get("geocodes", [])
 
+    def get_city_center(self, city: str) -> Optional[Location]:
+        """获取城市中心经纬度 (地理编码城市名), 失败返回 None
+
+        Args:
+            city: 城市名称, 如 "北京"
+
+        Returns:
+            城市中心坐标; 地理编码失败或无结果时返回 None
+        """
+        geocodes = self.geocode(city)
+        if not geocodes or not geocodes[0].get("location"):
+            return None
+        return self._parse_location(geocodes[0]["location"])
+
     def get_poi_detail(self, poi_id: str) -> Dict[str, Any]:
         """获取POI详情 (含图片等扩展信息)
 
@@ -236,13 +253,15 @@ class AmapService:
             图片URL (http自动转https以兼容前端混合内容限制); 无图返回None
         """
         # 命中缓存直接返回 (1小时有效), 避免重复消耗高德配额
-        cached = self._photo_cache.get(name)
-        if cached and cached[1] > time.time():
-            return cached[0]
+        # 读写共享缓存/熔断时间戳加锁, 防止多线程并发竞态
+        with self._photo_cache_lock:
+            cached = self._photo_cache.get(name)
+            if cached and cached[1] > time.time():
+                return cached[0]
 
-        # QPS熔断: 刚触发过CUQPS超限时, 短时间内直接返回None, 避免继续加重超限
-        if time.time() < self._photo_blocked_until:
-            return None
+            # QPS熔断: 刚触发过CUQPS超限时, 短时间内直接返回None, 避免继续加重超限
+            if time.time() < self._photo_blocked_until:
+                return None
 
         try:
             # 1. 全国搜索该名称的POI
@@ -273,12 +292,14 @@ class AmapService:
             url = url if url.startswith("https://") else url.replace("http://", "https://", 1)
 
             # 写入缓存 (1小时有效), 注意缓存None不写入以支持失败后重试
-            self._photo_cache[name] = (url, time.time() + 3600)
+            with self._photo_cache_lock:
+                self._photo_cache[name] = (url, time.time() + 3600)
             return url
         except Exception as e:
             # CUQPS超限(QPS超限)时熔断30秒, 让并发的其他请求短路, 避免集体触发超限
             if "CUQPS_HAS_EXCEEDED_THE_LIMIT" in str(e):
-                self._photo_blocked_until = time.time() + 30
+                with self._photo_cache_lock:
+                    self._photo_blocked_until = time.time() + 30
             logger.warning(f"高德获取图片失败: {e}")
             return None
 

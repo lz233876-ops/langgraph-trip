@@ -409,7 +409,11 @@ class MultiAgentTripPlanner:
             raise ValueError("LLM响应中未找到JSON对象")
 
         # 3. 解析JSON并通过Pydantic校验
-        data = json.loads(content[start:end + 1])
+        json_str = content[start:end + 1]
+        # LLM 常输出带尾逗号的非标准 JSON (如 {"a":1,} 或 [1,2,]),
+        # 先清理尾逗号再解析, 提高首轮成功率, 减少一次无谓的纠错重试。
+        json_str = re.sub(r",\s*([}\]])", r"\1", json_str)
+        data = json.loads(json_str)
         return TripPlan.model_validate(data)
 
     def _build_planner_query(self, request: TripRequest, state: GraphState) -> str:
@@ -501,6 +505,12 @@ class MultiAgentTripPlanner:
         """创建备用计划(当Agent失败时)"""
         start_date = datetime.strptime(request.start_date, "%Y-%m-%d")
 
+        # 城市中心坐标: 让兜底行程的景点落到正确城市, 而非固定指向北京
+        # (地理编码失败时退回北京默认坐标, 保证接口始终有数据返回)
+        center = self.amap_service.get_city_center(request.city) or Location(
+            longitude=116.4, latitude=39.9
+        )
+
         days = []
         for i in range(request.travel_days):
             current_date = start_date + timedelta(days=i)
@@ -514,7 +524,10 @@ class MultiAgentTripPlanner:
                     Attraction(
                         name=f"{request.city}景点{j+1}",
                         address=f"{request.city}市",
-                        location=Location(longitude=116.4 + i * 0.01 + j * 0.005, latitude=39.9 + i * 0.01 + j * 0.005),
+                        location=Location(
+                            longitude=center.longitude + i * 0.01 + j * 0.005,
+                            latitude=center.latitude + i * 0.01 + j * 0.005,
+                        ),
                         visit_duration=120,
                         description=f"这是{request.city}的著名景点",
                         category="景点",
