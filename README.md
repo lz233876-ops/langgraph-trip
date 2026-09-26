@@ -11,7 +11,7 @@
 - 📜 **行程历史记录**: SQLite 持久化每次生成的行程，支持分页查询、按城市筛选、查看、编辑、删除；**编辑修改可写回数据库**
 - 🗺️ **高德地图直调**: httpx 直接调用高德 Web 服务 REST API，无外部 MCP 进程依赖
 - 📸 **国内图源**: 景点图片优先取高德 POI 实景图（国内 CDN，快且稳），带 QPS 节流与熔断保护
-- 🛡️ **优雅降级**: 数据节点失败返回空列表、LLM 失败走备用计划、RAG 未配置 Key 自动禁用，保证接口始终可用
+- 🛡️ **优雅降级**: 数据节点失败返回空列表、LLM 失败走备用计划、RAG 未配置 Key 自动降级(景点详情回填仍可用)，保证接口始终可用
 - 🧱 **企业级工程化**: 日志落盘与轮转、全局异常处理、Prometheus 监控、Docker 一键部署、pytest 自动化测试
 - 🔌 **兼容任意模型**: 换 LLM 只需改 `.env` 三个参数（Key / Base URL / Model），无需改代码
 - 🎨 **现代化前端**: Vue3 + TypeScript + Vite + Ant Design Vue，深空霓虹渐变主题 + 玻璃拟态卡片
@@ -167,7 +167,7 @@ LLM_API_KEY=你的LLM Key
 LLM_BASE_URL=https://api.deepseek.com/v1
 LLM_MODEL_ID=deepseek-chat
 
-# RAG 知识库 (可选, 留空则 RAG 自动禁用, 不影响主流程)
+# RAG 知识库 (可选, 留空则语义检索自动降级, 景点详情回填仍可用, 不影响主流程)
 DASHSCOPE_API_KEY=你的阿里云百炼Key   # 控制台: bailian.console.aliyun.com
 EMBEDDING_MODEL=text-embedding-v4     # 嵌入模型名(默认即可)
 
@@ -278,8 +278,9 @@ builder.add_edge("fallback_plan", END)
 - **知识文档**: `backend/data/knowledge/*.md`（深圳/北京/上海/广州，含景点门票、开放时间、地铁交通、打卡点、避坑指南、美食住宿、经典路线）
 - **向量化**: 千问 `text-embedding-v4`，`RecursiveCharacterTextSplitter` 切块（300 字符/50 重叠）
 - **存储**: ChromaDB 双 collection——`trip_knowledge`（知识库）+ `trip_history`（增量保存生成的行程）
-- **注入**: 规划前检索该城市 top-k 片段，以"检索到的相关知识"段落注入 Prompt；知识库景点按名补坐标进候选；生成后逐景点回填详情
-- **降级**: 未配置 `DASHSCOPE_API_KEY` 时自动禁用，所有相关代码 try/except 静默跳过，不影响主流程
+- **注入**: 规划前检索该城市 top-k 片段，以"检索到的相关知识"段落注入 Prompt；知识库景点按名补坐标进候选
+- **详情回填**: 生成后每个景点按 `### 景点名` 从本地解析的知识库映射精确/模糊匹配回填门票/开放时间/交通/避坑(零 embedding 调用, 快且准)；未命中退回向量检索兜底
+- **降级**: 未配置 `DASHSCOPE_API_KEY` 时语义检索(上下文注入/景点补充)自动禁用，但景点详情回填走本地解析、仍可用，不影响主流程
 - **重建索引**: `POST /api/rag/rebuild`（修改知识文档后调用）；状态查看 `GET /api/rag/status`
 
 ```python
@@ -384,11 +385,15 @@ LLM_MODEL_ID=新模型名
 1. 确认 `backend/.env` 已配置 `DASHSCOPE_API_KEY`（阿里云百炼免费开通：bailian.console.aliyun.com）
 2. 确认已重启后端（配置在启动时读取）
 3. 修改过 `data/knowledge/*.md` 后调用 `POST /api/rag/rebuild` 重建索引
-4. 未配置 Key 时 RAG 自动禁用，行程规划功能不受影响（这是设计上的优雅降级）
+4. 未配置 Key 时 RAG 语义检索自动降级(景点详情回填仍可用)，行程规划功能不受影响（这是设计上的优雅降级）
 
-**Q4: 修改知识库文档后，检索结果没更新？**
+**Q4: 修改知识库文档后，结果没更新？**
 
-向量索引不会自动重建。修改文档后调用一次 `POST /api/rag/rebuild` 即可。
+知识库有两套索引，刷新时机不同：
+- **景点详情回填**（本地内存映射）：重启后端或调用 rebuild 都会刷新
+- **语义检索**（向量索引，用于上下文注入/景点补充）：只会在 rebuild 时重建，重启不会
+
+所以最省心的做法是：每次改完 `data/knowledge/*.md` 后调用一次 `POST /api/rag/rebuild`，两套索引一起刷新。
 
 **Q5: 编辑行程保存后，重新打开历史为什么没变？**
 
