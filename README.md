@@ -276,7 +276,9 @@ builder.add_edge("fallback_plan", END)
 ### RAG 知识库
 
 - **知识文档**: `backend/data/knowledge/*.md`（深圳/北京/上海/广州，含景点门票、开放时间、地铁交通、打卡点、避坑指南、美食住宿、经典路线）
-- **向量化**: 千问 `text-embedding-v4`，`RecursiveCharacterTextSplitter` 切块（300 字符/50 重叠）
+- **向量化**: 千问 `text-embedding-v4`，按 `##`/`###` 标题一段一块（不跨节合并），嵌入文本前置「城市+标题」以提升区分度
+- **混合检索**: 向量 + BM25 关键词双路召回，按 RRF 排名融合（分数尺度不可比，故只比排名）。BM25 中文按字符二元组切分、零分词器依赖，每城惰性建索引；纯字面查询（专有名词/店名/活动名）靠这条路兜底
+- **检索评测**: `backend/eval/eval_rag.py` 三组用例（简单/难/城市过滤负样本）；切块方案 A/B 见 `backend/eval/exp_chunking.py`，融合参数扫描见 `backend/eval/exp_fusion.py`
 - **存储**: ChromaDB 双 collection——`trip_knowledge`（知识库）+ `trip_history`（增量保存生成的行程）
 - **注入**: 规划前检索该城市 top-k 片段，以"检索到的相关知识"段落注入 Prompt；知识库景点按名补坐标进候选
 - **详情回填**: 生成后每个景点按 `### 景点名` 从本地解析的知识库映射精确/模糊匹配回填门票/开放时间/交通/避坑(零 embedding 调用, 快且准)；未命中退回向量检索兜底

@@ -1,32 +1,168 @@
 [
   {
+    "group": "easy",
     "query": "故宫门票多少钱",
     "city": "北京",
-    "relevant": [{ "source": "beijing.md", "contains": "故宫" }]
+    "relevant": ["故宫"]
   },
   {
+    "group": "easy",
     "query": "八达岭长城怎么去",
     "city": "北京",
-    "relevant": [{ "source": "beijing.md", "contains": "长城" }]
+    "relevant": ["八达岭长城"]
   },
   {
+    "group": "easy",
     "query": "外滩有什么好玩的",
     "city": "上海",
-    "relevant": [{ "source": "shanghai.md", "contains": "外滩" }]
+    "relevant": ["外滩"]
   },
   {
+    "group": "easy",
     "query": "上海迪士尼门票多少",
     "city": "上海",
-    "relevant": [{ "source": "shanghai.md", "contains": "迪士尼" }]
+    "relevant": ["上海迪士尼乐园"]
   },
   {
+    "group": "easy",
     "query": "深圳世界之窗门票",
     "city": "深圳",
-    "relevant": [{ "source": "shenzhen.md", "contains": "世界之窗" }]
+    "relevant": ["世界之窗"]
   },
   {
+    "group": "easy",
     "query": "广州小蛮腰怎么去",
     "city": "广州",
-    "relevant": [{ "source": "guangzhou.md", "contains": "小蛮腰" }]
+    "relevant": ["广州塔"]
+  },
+  {
+    "group": "easy",
+    "query": "陈家祠周一开门吗",
+    "city": "广州",
+    "relevant": ["陈家祠"]
+  },
+  {
+    "group": "easy",
+    "query": "深圳欢乐谷夜场几点",
+    "city": "深圳",
+    "relevant": ["欢乐谷"]
+  },
+
+  {
+    "group": "hard",
+    "query": "带孩子玩一整天主题乐园",
+    "city": "北京",
+    "relevant": ["北京环球影城"]
+  },
+  {
+    "group": "hard",
+    "query": "哪里能看皇帝住的宫殿",
+    "city": "北京",
+    "relevant": ["故宫"]
+  },
+  {
+    "group": "hard",
+    "query": "想俯瞰全城还能划船",
+    "city": "北京",
+    "relevant": ["颐和园"]
+  },
+  {
+    "group": "hard",
+    "query": "老北京坐三轮车逛四合院和酒吧街",
+    "city": "北京",
+    "relevant": ["什刹海胡同区"]
+  },
+  {
+    "group": "hard",
+    "query": "北京哪里吃铜锅涮肉",
+    "city": "北京",
+    "relevant": ["美食推荐"]
+  },
+  {
+    "group": "hard",
+    "query": "晚上有城堡烟花秀的地方",
+    "city": "上海",
+    "relevant": ["上海迪士尼乐园"]
+  },
+  {
+    "group": "hard",
+    "query": "适合周末散步的梧桐树街道",
+    "city": "上海",
+    "relevant": ["武康路历史文化街区"]
+  },
+  {
+    "group": "hard",
+    "query": "石库门里弄和手作文创小店",
+    "city": "上海",
+    "relevant": ["田子坊"]
+  },
+  {
+    "group": "hard",
+    "query": "哪里能看百年老店和铛铛车",
+    "city": "上海",
+    "relevant": ["南京路步行街"]
+  },
+  {
+    "group": "hard",
+    "query": "哪里可以露营看星星",
+    "city": "深圳",
+    "relevant": ["西涌海滩"]
+  },
+  {
+    "group": "hard",
+    "query": "哪里能俯瞰城市全景",
+    "city": "深圳",
+    "relevant": ["平安金融中心云际观光层"]
+  },
+  {
+    "group": "hard",
+    "query": "哪里有城墙遗址和先锋艺术展",
+    "city": "深圳",
+    "relevant": ["南头古城"]
+  },
+  {
+    "group": "hard",
+    "query": "哪里能看砖雕木雕陶塑",
+    "city": "广州",
+    "relevant": ["陈家祠"]
+  },
+  {
+    "group": "hard",
+    "query": "想找欧陆风情建筑拍照",
+    "city": "广州",
+    "relevant": ["沙面岛"]
+  },
+  {
+    "group": "hard",
+    "query": "哪里能坐小火车看熊猫白虎",
+    "city": "广州",
+    "relevant": ["长隆野生动物世界"]
+  },
+  {
+    "group": "hard",
+    "query": "早上哪里喝正宗早茶",
+    "city": "广州",
+    "relevant": ["美食推荐"]
+  },
+
+  {
+    "group": "negative",
+    "query": "迪士尼门票多少钱",
+    "city": "北京"
+  },
+  {
+    "group": "negative",
+    "query": "小蛮腰怎么去",
+    "city": "深圳"
+  },
+  {
+    "group": "negative",
+    "query": "外滩夜景几点开灯",
+    "city": "广州"
+  },
+  {
+    "group": "negative",
+    "query": "故宫怎么预约",
+    "city": "上海"
   }
 ]

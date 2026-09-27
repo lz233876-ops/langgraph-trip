@@ -12,15 +12,16 @@
 """
 
 import logging
+import math
 import os
 import re
+from collections import Counter
 from http import HTTPStatus
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings as LangChainEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from ..config import get_settings
 from ..models.schemas import TripPlan, TripRequest
@@ -37,6 +38,74 @@ _CITY_NAME_MAP = {
     "shanghai": "上海",
     "guangzhou": "广州",
 }
+
+# ============ 关键词检索 (BM25) ============
+
+# BM25 标准默认参数
+_BM25_K1 = 1.5
+_BM25_B = 0.75
+# RRF 融合常数(标准取值): 融合分 = Σ 1/(_RRF_K + 排名)
+_RRF_K = 60
+# 融合时每路取多少候选。实测这个值比 _RRF_K 关键得多: 只取 top-k(3) 时两路候选池
+# 太浅, RRF 无处发挥, 难组 MRR 0.93; 取到 5 即升到 0.96 (见 eval/exp_fusion.py)。
+_FUSE_CANDIDATES = 5
+
+# ASCII 词 或 CJK 字串
+_TOKEN_RUN_RE = re.compile(r"[A-Za-z0-9]+|[一-鿿]+")
+
+
+def _tokenize(text: str) -> List[str]:
+    """中文按字符二元组切分, 英文按词 —— 不引分词器依赖
+
+    中文没有空格, 按空白切词会把整句变成一个 token, BM25 就退化成整句匹配。
+    字符二元组("城堡烟花秀" → 城堡/堡烟/烟花/花秀) 对短查询足够, 且零依赖。
+    """
+    tokens: List[str] = []
+    for run in _TOKEN_RUN_RE.findall(text):
+        if run.isascii():
+            tokens.append(run.lower())
+        elif len(run) == 1:
+            tokens.append(run)
+        else:
+            tokens.extend(run[i:i + 2] for i in range(len(run) - 1))
+    return tokens
+
+
+class _BM25:
+    """极简 BM25 (Okapi)
+
+    语料只有几十个片段, 纯 Python 足够快, 不值得为它引 rank_bm25 依赖。
+    分数尺度与向量距离不可比, 所以上层用 RRF 按排名融合, 不比较绝对分数。
+    """
+
+    def __init__(self, corpus: List[List[str]]):
+        self._corpus = corpus
+        self._freqs = [Counter(doc) for doc in corpus]
+        self._avgdl = (sum(len(d) for d in corpus) / len(corpus)) if corpus else 0.0
+        doc_freq: Counter = Counter()
+        for doc in corpus:
+            doc_freq.update(set(doc))
+        n = len(corpus)
+        self._idf = {
+            term: math.log(1 + (n - cnt + 0.5) / (cnt + 0.5))
+            for term, cnt in doc_freq.items()
+        }
+
+    def scores(self, query_tokens: List[str]) -> List[float]:
+        avgdl = self._avgdl or 1.0
+        result = []
+        for doc, freq in zip(self._corpus, self._freqs):
+            dl = len(doc) or 1
+            score = 0.0
+            for term in query_tokens:
+                tf = freq.get(term)
+                if not tf:
+                    continue
+                score += self._idf.get(term, 0.0) * tf * (_BM25_K1 + 1) / (
+                    tf + _BM25_K1 * (1 - _BM25_B + _BM25_B * dl / avgdl)
+                )
+            result.append(score)
+        return result
 
 
 class _DashScopeEmbeddings(LangChainEmbeddings):
@@ -93,11 +162,8 @@ class RagService:
         self._embedding = None
         self._knowledge_store = None
         self._history_store = None
-        self._text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=300,
-            chunk_overlap=50,
-            separators=["\n## ", "\n### ", "\n- ", "\n", "。", "；", " "],
-        )
+        # BM25 索引缓存 {城市: (片段列表, _BM25)}, 惰性构建; 重建知识索引时清空
+        self._bm25_cache: Dict[str, Tuple[List[Document], _BM25]] = {}
         # 景点详情本地映射 {城市: {景点名: 详情}}, 不依赖 embedding, 生成后精确回填用
         self._attraction_details: Dict[str, Dict[str, str]] = {}
         self._init()
@@ -156,16 +222,56 @@ class RagService:
 
     # ============ 知识文档索引 ============
 
+    @staticmethod
+    def _parse_sections(content: str) -> List[Tuple[str, str, List[str]]]:
+        """把知识文档拆成 [(二级标题, 三级标题, 正文行)]
+
+        一段一块、不跨节合并 —— 合并块(如「北京路步行街 + 陈家祠」)会让一个向量
+        代表两个景点, 拉低区分度。纯容器型 ## (正文全在 ### 子节里, 如「必去景点」)
+        没有直属正文, 直接跳过, 避免产生空块。
+        """
+        sections: List[Tuple[str, str, List[str]]] = []
+        h2: Optional[str] = None
+        h3: Optional[str] = None
+        lines: List[str] = []
+
+        def flush() -> None:
+            if h2 and (lines or h3):
+                sections.append((h2, h3, list(lines)))
+
+        for raw in content.splitlines():
+            stripped = raw.strip()
+            if stripped.startswith("### "):
+                flush()
+                h3, lines = stripped[4:].strip(), []
+            elif stripped.startswith("## "):
+                flush()
+                h2, h3, lines = stripped[3:].strip(), None, []
+            elif stripped.startswith("# "):
+                continue  # 文档标题, 丢弃
+            elif stripped:
+                lines.append(stripped)
+        flush()
+        return sections
+
     def _load_knowledge_documents(self) -> List[Document]:
-        """读取 data/knowledge/*.md 并按段落切块"""
+        """读取 data/knowledge/*.md, 按 ## / ### 一段一块
+
+        嵌入文本 = 「城市 + 标题」前缀 + 该段原文。之所以要加前缀: 所有块共用同一套
+        模板正文(- 门票：/- 开放时间：/...), 块间余弦高达 0.65, 景点名的区分度被模板
+        噪声淹没, 「故宫门票多少钱」都召回不到故宫。前置标题后离线评测 MRR 由 0.81
+        升到 0.91 (对比实验见 eval/exp_chunking.py)。
+        """
         documents: List[Document] = []
         for md_path in sorted(KNOWLEDGE_DIR.glob("*.md")):
             city = _CITY_NAME_MAP.get(md_path.stem, md_path.stem)
             content = md_path.read_text(encoding="utf-8")
-            for chunk in self._text_splitter.split_text(content):
+            for h2, h3, lines in self._parse_sections(content):
+                title = h3 or h2
+                header = f"### {h3}" if h3 else f"## {h2}"
                 documents.append(
                     Document(
-                        page_content=chunk,
+                        page_content=f"{city} {title}\n{header}\n" + "\n".join(lines),
                         metadata={"city": city, "source": md_path.name},
                     )
                 )
@@ -233,6 +339,8 @@ class RagService:
 
         # 本地景点详情缓存始终刷新 (不依赖 embedding, 无 key 时详情回填仍可用)
         self._attraction_details = self._load_attraction_details()
+        # 知识片段变了, BM25 缓存必须一起失效, 否则关键词路会继续用旧语料
+        self._bm25_cache.clear()
 
          # ① RAG 没启用 → 直接报告"未启用"
         if not self.enabled:
@@ -296,6 +404,53 @@ class RagService:
 
     # ============ 检索 ============
 
+    def _city_documents(self, city: str) -> List[Document]:
+        """取某城市全部知识片段 (给 BM25 建索引用)
+
+        直接从向量库读, 而不是重读 data/knowledge —— 保证关键词路与向量路永远
+        是同一份片段, 不会出现「改了文档但忘了 rebuild」导致两路不一致。
+        """
+        data = self._knowledge_store.get(where={"city": city})
+        return [
+            Document(page_content=text, metadata=meta or {})
+            for text, meta in zip(data.get("documents") or [], data.get("metadatas") or [])
+        ]
+
+    def _keyword_search(self, query: str, city: str, k: int) -> List[Document]:
+        """BM25 关键词检索 (限定城市)"""
+        cached = self._bm25_cache.get(city)
+        if cached is None:
+            docs = self._city_documents(city)
+            if not docs:
+                return []
+            cached = (docs, _BM25([_tokenize(d.page_content) for d in docs]))
+            self._bm25_cache[city] = cached
+        docs, index = cached
+        scores = index.scores(_tokenize(query))
+        ranked = sorted(range(len(docs)), key=lambda i: -scores[i])
+        return [docs[i] for i in ranked[:k] if scores[i] > 0]
+
+    def _fused_search(self, query: str, city: str, k: int) -> List[Document]:
+        """向量 + BM25 双路召回, 用 RRF 按排名融合
+
+        两路分数尺度不可比 (L2 距离 vs BM25 分数), 所以不比分数、只比排名, 省掉
+        归一化调参。向量负责语义泛化, BM25 负责词面命中 —— 后者是纯词面查询
+        ("晚上有城堡烟花秀的地方")唯一能召回目标的那条路。
+        """
+        depth = max(k, _FUSE_CANDIDATES)  # 每路多取一些候选再融合, 最后仍只返回 k 条
+        paths = [
+            self._knowledge_store.similarity_search(query, k=depth, filter={"city": city}),
+            self._keyword_search(query, city, depth),
+        ]
+        fused: Dict[str, float] = {}
+        by_key: Dict[str, Document] = {}
+        for docs in paths:
+            for rank, doc in enumerate(docs):
+                key = doc.page_content  # 同城市内片段内容唯一, 直接当键
+                by_key[key] = doc
+                fused[key] = fused.get(key, 0.0) + 1.0 / (_RRF_K + rank + 1)
+        return [by_key[key] for key in sorted(fused, key=lambda d: -fused[d])[:k]]
+
     def retrieve_documents(self, query: str, city: Optional[str] = None, k: int = 3) -> List[Document]:
         """检索并返回原始 Document (带 metadata.source), 供评测脚本计算召回率
 
@@ -305,13 +460,9 @@ class RagService:
             return []
         docs: List[Document] = []
         try:
-            # 1. 城市知识库 (限定城市, 相关性最高)
+            # 1. 城市知识库: 向量 + BM25 双路融合 (限定城市, 相关性最高)
             if city:
-                docs.extend(
-                    self._knowledge_store.similarity_search(
-                        query, k=k, filter={"city": city}
-                    )
-                )
+                docs.extend(self._fused_search(query, city, k))
             # 2. 历史行程 (跨城市, 风格参考)
             docs.extend(self._history_store.similarity_search(query, k=2))
         except Exception as e:
