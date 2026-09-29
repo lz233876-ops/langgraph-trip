@@ -1,4 +1,4 @@
-# LangChain 智能旅行助手 🌍✈️
+# LangGraph 智能旅行助手 🌍✈️
 
 基于 **LangChain + LangGraph + FastAPI** 构建的智能旅行规划助手，直调高德地图 Web 服务 API，提供个性化的多日旅行计划生成，并内置 **RAG 知识库检索**与**行程历史记录持久化**。
 
