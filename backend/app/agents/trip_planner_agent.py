@@ -28,6 +28,10 @@ from ..models.schemas import (
 
 logger = logging.getLogger(__name__)
 
+# 冷启动景点高德校验阶段的时间预算(秒): 超时则放弃剩余景点, 只保留已校验通过的。
+# 冷启动整体预算由外部知识服务控制, 这里是第二道闸, 防止高德接口慢时拖垮主请求。
+_COLD_START_VALIDATE_BUDGET_S = 15.0
+
 # ============ 行程规划提示词 ============
 
 PLANNER_SYSTEM_PROMPT = """你是专业的行程规划专家。根据用户提供的景点、天气和酒店信息, 生成详细的旅行计划。
@@ -115,6 +119,14 @@ class GraphState(TypedDict, total=False):
     token_usage: TokenUsage            # LLM token 用量合计(含重试)
     llm_calls: int                     # LLM 调用次数
     llm_duration_ms: int               # LLM 累计耗时(毫秒)
+    # 知识来源: knowledge_base(命中本地知识库) / model_generated(模型冷启动) / none(无知识支撑)
+    knowledge_source: str
+    # 冷启动生成的攻略内容 (供后续 prompt 注入节点使用)
+    external_knowledge: object
+    # 冷启动自身的 LLM 用量(需并入总用量, 否则漏报成本)
+    cold_start_usage: TokenUsage
+    cold_start_calls: int
+    cold_start_duration_ms: int
 
 
 class MultiAgentTripPlanner:
@@ -164,10 +176,75 @@ class MultiAgentTripPlanner:
             except Exception as e:
                 logger.warning(f"   ⚠️ 知识库景点补充失败(不影响主流程): {e}")
 
-            return {"attraction_pois": pois}
+            # 知识库未收录该城市 → 模型冷启动兜底 (生成攻略 + 高德校验景点)
+            extra = self._cold_start_knowledge(request, pois)
+            pois.extend(extra["validated_pois"])
+
+            return {"attraction_pois": pois, **extra["state"]}
         except Exception as e:
             logger.warning(f"   ⚠️ 景点搜索失败: {e}")
             return {"attraction_pois": []}
+
+    def _cold_start_knowledge(self, request: TripRequest, pois: List[POIInfo]) -> dict:
+        """知识库未收录城市时的模型冷启动(生成攻略 → 高德校验景点)
+
+        设计要点:
+        - 只在知识库确实未覆盖该城市时触发, 已覆盖城市走原 RAG 链路, 零额外开销;
+        - 模型给出的景点名逐个过高德校验, 搜不到的丢弃 —— 编造的景点进不了候选池;
+        - 命中校验的 POI 带高德真实坐标, 所以行程里的位置数据依然全部来自高德;
+        - 生成内容会落盘, 同一城市第二次请求直接命中缓存, 不再调用 LLM。
+
+        Returns:
+            {"validated_pois": [...], "state": {...需合并进 GraphState 的字段...}}
+        """
+        empty = {"validated_pois": [], "state": {"knowledge_source": "none"}}
+        try:
+            from ..services.external_knowledge_service import (
+                get_external_knowledge_service,
+            )
+
+            service = get_external_knowledge_service()
+            # 冷启动判定只做一次(生成时会再核对, 这里先短路掉已收录城市)
+            if service.is_city_covered(request.city):
+                return {"validated_pois": [], "state": {"knowledge_source": "knowledge_base"}}
+
+            knowledge = service.get_external_knowledge(request.city, request)
+            if not knowledge.available:
+                logger.info(f"   ℹ️ {request.city} 无知识库且冷启动未产出, 仅用高德结果生成")
+                return empty
+
+            # 高德校验: 只有真实存在的景点才能进入候选池
+            deadline = time.monotonic() + _COLD_START_VALIDATE_BUDGET_S
+            known = {p.name for p in pois if p.name}
+            validated = [
+                poi for poi in service.collect_validated_pois(
+                    knowledge, request.city, self.amap_service, deadline
+                )
+                if not any((poi.name or "") in n for n in known)
+            ]
+            for poi in validated:
+                known.add(poi.name or "")
+                logger.info(f"   + 冷启动补充景点: {poi.name}")
+            usage = knowledge.usage
+            return {
+                "validated_pois": validated,
+                "state": {
+                    # 放进 state 而不是实例属性: 规划器是单例且在线程池里并发服务,
+                    # 实例属性会在多个请求之间串数据。
+                    "external_knowledge": knowledge,
+                    "knowledge_source": knowledge.source,
+                    "cold_start_usage": TokenUsage(
+                        input_tokens=usage.input_tokens,
+                        output_tokens=usage.output_tokens,
+                        total_tokens=usage.total_tokens,
+                    ),
+                    "cold_start_calls": usage.calls,
+                    "cold_start_duration_ms": usage.duration_ms,
+                },
+            }
+        except Exception as e:
+            logger.warning(f"   ⚠️ 模型冷启动失败(退回纯高德检索): {e}")
+            return empty
 
     def _get_weather(self, state: GraphState) -> dict:
         """节点2: 查询天气 (服务直调, 不走LLM)"""
@@ -312,12 +389,23 @@ class MultiAgentTripPlanner:
         result = self.graph.invoke({"request": request})
         trip_plan = result["trip_plan"]
 
-        # LLM 用量汇总 (走备用计划/未调用LLM时为 0)
+        # LLM 用量汇总: 行程生成用量 + 冷启动(仅未收录城市才有)用量,
+        # 冷启动也是真金白银的调用, 不并入就会漏报成本。
+        cold_usage = result.get("cold_start_usage") or TokenUsage()
+        gen_usage = result.get("token_usage") or TokenUsage()
         usage = TripUsage(
-            token_usage=result.get("token_usage") or TokenUsage(),
-            llm_calls=result.get("llm_calls", 0),
-            llm_duration_ms=result.get("llm_duration_ms", 0),
+            token_usage=TokenUsage(
+                input_tokens=gen_usage.input_tokens + cold_usage.input_tokens,
+                output_tokens=gen_usage.output_tokens + cold_usage.output_tokens,
+                total_tokens=gen_usage.total_tokens + cold_usage.total_tokens,
+            ),
+            llm_calls=result.get("llm_calls", 0) + result.get("cold_start_calls", 0),
+            llm_duration_ms=result.get("llm_duration_ms", 0) + result.get("cold_start_duration_ms", 0),
         )
+
+        # 知识来源: 供接口/前端标注内容可信度 (知识库 / 模型生成 / 无)
+        trip_plan.knowledge_source = result.get("knowledge_source") or "none"
+        trip_plan.notice = self._build_knowledge_notice(trip_plan.knowledge_source, trip_plan.city)
 
         # 天气: 用高德真实天气覆盖LLM生成的天气。
         # LLM 常因日期不足而把天气字段输出 null/0, 导致前端温度全显示0;
@@ -447,17 +535,59 @@ class MultiAgentTripPlanner:
         # RAG 增强: 检索城市旅游知识 + 相似历史行程, 注入 prompt 作为参考。
         # 知识库让行程更贴合当地实际(门票/交通/避坑), 历史行程让风格更稳定。
         # RAG 未启用或检索失败时跳过, 不影响正常生成。
+        rag_context = ""
         try:
             from ..services.rag_service import get_rag_service
 
             rag_context = get_rag_service().build_rag_context(request)
-            if rag_context:
-                query += f"\n\n{rag_context}\n"
         except Exception as e:
             logger.warning(f"⚠️ RAG 上下文注入失败(不影响生成): {e}")
 
+        if rag_context:
+            query += f"\n\n{rag_context}\n"
+        else:
+            # 知识库没检索到内容 → 用冷启动生成的外部知识兜底。
+            # 只在 RAG 为空时注入, 避免两种来源重复占 prompt 且互相矛盾。
+            external = self._external_context(state)
+            if external:
+                query += f"\n\n{external}\n"
+
         query += "\n请严格按照 system 中定义的 JSON 结构输出完整 JSON。"
         return query
+
+    @staticmethod
+    def _build_knowledge_notice(source: str, city: str) -> str:
+        """按知识来源生成给用户看的数据来源提示 (知识库来源时为空串)
+
+        提示文案由外部知识服务统一维护, 这里只做转调与兜底。
+        """
+        if source == "knowledge_base":
+            return ""
+        try:
+            from ..services.external_knowledge_service import (
+                get_external_knowledge_service,
+            )
+
+            return get_external_knowledge_service().build_notice(source, city)
+        except Exception as e:
+            logger.warning(f"⚠️ 数据来源提示生成失败: {e}")
+            return ""
+
+    @staticmethod
+    def _external_context(state: GraphState) -> str:
+        """把冷启动生成的外部知识包装成 prompt 上下文 (无内容时返回空串)"""
+        knowledge = state.get("external_knowledge")
+        if knowledge is None:
+            return ""
+        try:
+            from ..services.external_knowledge_service import (
+                get_external_knowledge_service,
+            )
+
+            return get_external_knowledge_service().build_context(knowledge)
+        except Exception as e:
+            logger.warning(f"⚠️ 外部知识注入失败(不影响生成): {e}")
+            return ""
 
     @staticmethod
     def _pois_to_text(pois: List[POIInfo]) -> str:

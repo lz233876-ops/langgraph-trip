@@ -18,7 +18,7 @@ import re
 from collections import Counter
 from http import HTTPStatus
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings as LangChainEmbeddings
@@ -149,9 +149,24 @@ class _DashScopeEmbeddings(LangChainEmbeddings):
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 KNOWLEDGE_DIR = DATA_DIR / "knowledge"
 CHROMA_DIR = DATA_DIR / "chroma"
+# 模型冷启动生成的外部知识存放目录 (人工维护的是 KNOWLEDGE_DIR 根下的 *.md)。
+# 放在子目录便于区分来源、需要时整体丢弃; 索引规则与人工文档完全一致。
+EXTERNAL_KNOWLEDGE_DIR = KNOWLEDGE_DIR / "external"
 
 _KNOWLEDGE_COLLECTION = "trip_knowledge"
 _HISTORY_COLLECTION = "trip_history"
+
+
+def iter_knowledge_files() -> List[Path]:
+    """枚举全部知识文档 (人工维护的城市文档 + 冷启动生成的外部知识)
+
+    只扫 KNOWLEDGE_DIR 根目录是原行为; 现在额外吸收 external/ 子目录, 让冷启动
+    生成的内容无需任何新索引代码就能"转正"进知识库。
+    """
+    files = sorted(KNOWLEDGE_DIR.glob("*.md"))
+    if EXTERNAL_KNOWLEDGE_DIR.is_dir():
+        files.extend(sorted(EXTERNAL_KNOWLEDGE_DIR.glob("*.md")))
+    return files
 
 
 class RagService:
@@ -166,6 +181,8 @@ class RagService:
         self._bm25_cache: Dict[str, Tuple[List[Document], _BM25]] = {}
         # 景点详情本地映射 {城市: {景点名: 详情}}, 不依赖 embedding, 生成后精确回填用
         self._attraction_details: Dict[str, Dict[str, str]] = {}
+        # 已收录城市集合缓存 (None = 尚未计算); 重建知识索引时失效
+        self._covered_cities_cache: Optional[Set[str]] = None
         self._init()
         self._attraction_details = self._load_attraction_details()
 
@@ -263,7 +280,7 @@ class RagService:
         升到 0.91 (对比实验见 eval/exp_chunking.py)。
         """
         documents: List[Document] = []
-        for md_path in sorted(KNOWLEDGE_DIR.glob("*.md")):
+        for md_path in iter_knowledge_files():
             city = _CITY_NAME_MAP.get(md_path.stem, md_path.stem)
             content = md_path.read_text(encoding="utf-8")
             for h2, h3, lines in self._parse_sections(content):
@@ -284,7 +301,7 @@ class RagService:
         (未配置 DASHSCOPE_API_KEY 时也能工作)。单个文件解析失败仅告警并跳过。
         """
         details_map: Dict[str, Dict[str, str]] = {}
-        for md_path in sorted(KNOWLEDGE_DIR.glob("*.md")):
+        for md_path in iter_knowledge_files():
             city = _CITY_NAME_MAP.get(md_path.stem, md_path.stem)
             try:
                 content = md_path.read_text(encoding="utf-8")
@@ -341,6 +358,8 @@ class RagService:
         self._attraction_details = self._load_attraction_details()
         # 知识片段变了, BM25 缓存必须一起失效, 否则关键词路会继续用旧语料
         self._bm25_cache.clear()
+        # 收录城市可能变化(新增外部知识/文档), 覆盖判定缓存一并失效
+        self._covered_cities_cache = None
 
          # ① RAG 没启用 → 直接报告"未启用"
         if not self.enabled:
@@ -401,6 +420,53 @@ class RagService:
         if trip_plan.budget:
             lines.append(f"总预算: {trip_plan.budget.total}元")
         return "\n".join(lines)
+
+    # ============ 覆盖范围判定 (冷启动兜底用) ============
+
+    def covered_cities(self) -> Set[str]:
+        """已收录进知识库的城市集合
+
+        优先从向量库的实际 metadata 统计 —— 这样冷启动生成并落盘的城市, 重建索引后
+        会自动算作"已收录", 无需维护任何硬编码名单。
+        向量库为空/未启用/查询失败时, 回退到 data/knowledge 的文件名映射,
+        保证"启动时索引尚未建好"这一刻的判定也不会把已知城市误判成未知城市。
+        """
+        if self._covered_cities_cache is not None:
+            return self._covered_cities_cache
+        cities: Set[str] = set()
+        if self.enabled:
+            try:
+                data = self._knowledge_store.get(include=["metadatas"])
+                for meta in data.get("metadatas") or []:
+                    city = (meta or {}).get("city")
+                    if city:
+                        cities.add(str(city).strip())
+            except Exception as e:
+                logger.warning(f"⚠️  知识库城市统计失败, 回退文件名映射: {e}")
+        if not cities:
+            cities = {city for city in _CITY_NAME_MAP.values() if city}
+        self._covered_cities_cache = cities
+        return cities
+
+    def is_city_covered(self, city: str) -> bool:
+        """城市是否有知识库支撑 (供"知识库未命中则模型冷启动"判定)
+
+        做了三种等价性兼容: 去空白、去「市」后缀、包含关系
+        (兼容前端输入「西安市」而知识库记为「西安」这类写法差异)。
+        """
+        norm = re.sub(r"\s+", "", (city or ""))
+        if not norm:
+            return False
+        variants = {norm, norm[:-1] if norm.endswith("市") else f"{norm}市"}
+        for known in self.covered_cities():
+            known_norm = re.sub(r"\s+", "", known)
+            if not known_norm:
+                continue
+            if known_norm in variants:
+                return True
+            if known_norm in norm or norm in known_norm:
+                return True
+        return False
 
     # ============ 检索 ============
 

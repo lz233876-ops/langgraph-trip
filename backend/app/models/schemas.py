@@ -151,6 +151,14 @@ class TripPlan(BaseModel):
     weather_info: List[WeatherInfo] = Field(default=[], description="天气信息")
     overall_suggestions: str = Field(..., description="总体建议")
     budget: Optional[Budget] = Field(default=None, description="预算信息")
+    knowledge_source: str = Field(
+        default="none",
+        description="知识来源: knowledge_base=本地知识库 / model_generated=知识库未收录,由模型生成 / none=无知识增强",
+    )
+    notice: str = Field(
+        default="",
+        description="数据来源提示 (非知识库来源时提醒用户核实, 供前端展示)",
+    )
 
 
 class TokenUsage(BaseModel):

@@ -45,6 +45,10 @@ logs/
 data/chroma/
 *.db
 
+# 未收录城市的模型生成知识 (运行时缓存, 首次冷启动会自动重建;
+# 内容取决于本机调用的模型, 入库只会产生无意义的合并冲突)
+data/knowledge/external/
+
 # 测试
 .pytest_cache/
 .coverage

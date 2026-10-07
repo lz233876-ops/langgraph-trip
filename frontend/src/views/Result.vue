@@ -66,6 +66,17 @@
 
       <!-- 主内容区 -->
       <div class="main-content">
+        <!-- 数据来源提示: 城市未收录知识库时, 提醒用户内容由模型生成、需自行核实 -->
+        <div v-if="knowledgeNotice" class="knowledge-notice" :class="`notice-${knowledgeSource}`">
+          <span class="notice-icon">{{ knowledgeSource === 'model_generated' ? '🤖' : 'ℹ️' }}</span>
+          <div class="notice-body">
+            <div class="notice-title">
+              {{ knowledgeSource === 'model_generated' ? '该城市暂无知识库，以下内容由 AI 生成' : '该城市暂无知识库' }}
+            </div>
+            <div class="notice-text">{{ knowledgeNotice }}</div>
+          </div>
+        </div>
+
         <!-- 顶部信息区:左侧概览+预算,右侧地图 -->
         <div class="top-info-section">
           <!-- 左侧:行程概览和预算明细 -->
@@ -390,6 +401,13 @@ const formatMoney = (value: number): string => {
 // LLM 耗时(秒, 保留1位小数)
 const llmDurationSeconds = computed(() => {
   return ((tripUsage.value?.llm_duration_ms || 0) / 1000).toFixed(1)
+})
+
+// 数据来源: 知识库命中时不提示; 模型生成/无知识增强时提示用户核实
+const knowledgeSource = computed(() => tripPlan.value?.knowledge_source || 'none')
+const knowledgeNotice = computed(() => {
+  if (knowledgeSource.value === 'knowledge_base') return ''
+  return tripPlan.value?.notice || ''
 })
 
 onMounted(async () => {
@@ -1066,6 +1084,56 @@ const drawRoutes = (AMap: any, attractions: any[]) => {
 .main-content {
   flex: 1;
   min-width: 0;
+}
+
+/* 数据来源提示条: 城市未收录知识库时提示用户内容需自行核实 */
+.knowledge-notice {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+  padding: 14px 18px;
+  border-radius: 10px;
+  border: 1px solid #ffe0a3;
+  background: linear-gradient(135deg, #fffbf0 0%, #fff7e6 100%);
+}
+
+.knowledge-notice.notice-none {
+  border-color: #d9e2ec;
+  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+}
+
+.notice-icon {
+  font-size: 20px;
+  line-height: 1.3;
+  flex-shrink: 0;
+}
+
+.notice-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.notice-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #b45309;
+  margin-bottom: 4px;
+}
+
+.notice-none .notice-title {
+  color: #475569;
+}
+
+.notice-text {
+  font-size: 13px;
+  line-height: 1.65;
+  color: #78500f;
+  word-break: break-word;
+}
+
+.notice-none .notice-text {
+  color: #64748b;
 }
 
 /* 景点图片样式 */

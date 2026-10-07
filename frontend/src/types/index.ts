@@ -74,7 +74,13 @@ export interface TripPlan {
   weather_info: WeatherInfo[]
   overall_suggestions: string
   budget?: Budget
+  /** 知识来源: knowledge_base=本地知识库 / model_generated=知识库未收录,由模型生成 / none=无知识增强 */
+  knowledge_source?: KnowledgeSource
+  /** 数据来源提示 (非知识库来源时提醒用户核实) */
+  notice?: string
 }
+
+export type KnowledgeSource = 'knowledge_base' | 'model_generated' | 'none'
 
 export interface TripFormData {
   city: string

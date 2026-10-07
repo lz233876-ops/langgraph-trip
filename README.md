@@ -8,6 +8,7 @@
 - 🤖 **LangGraph 工作流编排**: 用 StateGraph 构建多节点旅行规划流水线（搜景点 → 查天气 → 搜酒店 → 生成行程 → 兜底），支持条件路由
 - 🧠 **RAG 知识库检索增强**: 内置 4 城市旅游知识库（深圳/北京/上海/广州，含门票/交通/避坑/美食/住宿），千问 `text-embedding-v4` 向量化存入 ChromaDB，规划时自动检索并注入 LLM
 - 🏆 **知识库景点落地**: 知识库知名景点按名搜索补真实坐标进入行程候选；生成后每个景点自动回填门票/开放时间/交通/避坑详情
+- 🌐 **未收录城市自动兜底**: 搜知识库没有的城市时，自动调用 LLM 生成该城市攻略，并逐条经高德 POI 校验景点真实性（编造的景点直接丢弃，坐标全部来自高德）；生成内容落盘复用，同城第二次请求不再调用 LLM
 - 📜 **行程历史记录**: SQLite 持久化每次生成的行程，支持分页查询、按城市筛选、查看、编辑、删除；**编辑修改可写回数据库**
 - 🗺️ **高德地图直调**: httpx 直接调用高德 Web 服务 REST API，无外部 MCP 进程依赖
 - 📸 **国内图源**: 景点图片优先取高德 POI 实景图（国内 CDN，快且稳），带 QPS 节流与熔断保护
@@ -108,7 +109,8 @@ langgraph-trip/
 │   │   │   ├── shenzhen.md
 │   │   │   ├── beijing.md
 │   │   │   ├── shanghai.md
-│   │   │   └── guangzhou.md
+│   │   │   ├── guangzhou.md
+│   │   │   └── external/          # 未收录城市的模型生成知识(运行时生成, 已 gitignore)
 │   │   ├── chroma/                # ChromaDB 向量库(运行时生成, 已 gitignore)
 │   │   └── trip_planner.db        # SQLite 历史数据库(运行时生成, 已 gitignore)
 │   ├── tests/                     # pytest 自动化测试(隔离真实网络)
@@ -285,6 +287,25 @@ builder.add_edge("fallback_plan", END)
 - **降级**: 未配置 `DASHSCOPE_API_KEY` 时语义检索(上下文注入/景点补充)自动禁用，但景点详情回填走本地解析、仍可用，不影响主流程
 - **重建索引**: `POST /api/rag/rebuild`（修改知识文档后调用）；状态查看 `GET /api/rag/status`
 
+#### 未收录城市的模型冷启动
+
+知识库只收录 4 个城市，搜其他城市时原来的行为是**静默降级**——行程照样能生成，但门票/开放时间/避坑这些当地细节全靠模型临场编。现在这条路径改成显式兜底：
+
+1. **命中判定**：`covered_cities()` 从向量库的真实 metadata 统计已收录城市（不是硬编码名单），所以外部知识入库后该城市自动算作已收录；判定异常时保守认为"已收录"，绝不用模型内容覆盖人工维护的资料
+2. **模型生成**：未收录则按知识库同款 Markdown 结构生成该城市攻略，Prompt 强制"门票/开放时间不确定就写以官方为准"，禁止编造精确数字与门牌号
+3. **高德校验（防幻觉关键）**：生成内容里的景点名逐个拿去高德 POI 搜索，**搜不到的直接丢弃**；命中的用高德返回的真实坐标。假景点进不了候选池，行程位置数据 100% 来自高德
+4. **落盘复用**：生成结果写入 `data/knowledge/external/<城市>.md`，被 `iter_knowledge_files()` 与人工文档一并索引——**零额外索引代码**，冷启动一次后该城市即"转正"；同城第二次请求命中缓存，不再调用 LLM
+5. **来源标注**：响应中 `data.knowledge_source` 取 `knowledge_base` / `model_generated` / `none`，并附 `data.notice` 提示文案，前端结果页顶部横幅提醒用户核实
+
+```python
+# 调用链: 未收录城市 → 生成 → 高德逐条校验 → 落盘 → 注入 Prompt
+knowledge = service.get_external_knowledge(request.city, request)
+pois = service.collect_validated_pois(knowledge, request.city, amap_service, deadline)
+# 搜不到的景点在此被丢弃, 只有高德确认存在的才进入候选池
+```
+
+**成本**: 冷启动仅在每个新城市第一次付费（实测 1 次调用约 1.4k tokens、7 秒），之后走磁盘缓存。景点校验受 `_MAX_VALIDATE_NAMES`（默认 6）与时间预算双重限制；免费高德 Key 并发高时可能触发 `CUQPS_HAS_EXCEEDED_THE_LIMIT`，已内置退避重试，避免把真实景点误判为"不存在"。
+
 ```python
 # Embedding 直接封装 DashScope 官方 SDK (无需 langchain-dashscope)
 import dashscope
@@ -396,6 +417,10 @@ LLM_MODEL_ID=新模型名
 - **语义检索**（向量索引，用于上下文注入/景点补充）：只会在 rebuild 时重建，重启不会
 
 所以最省心的做法是：每次改完 `data/knowledge/*.md` 后调用一次 `POST /api/rag/rebuild`，两套索引一起刷新。
+
+**Q6: 搜一个知识库没收录的城市（如洛阳、大同）会怎样？**
+
+不会报错，会走**模型冷启动**：调用 LLM 生成该城市攻略 → 逐条经高德 POI 校验景点真实性（搜不到的丢弃）→ 落盘到 `data/knowledge/external/` → 注入 Prompt。结果页顶部会显示横幅提示"该城市暂无知识库，内容由 AI 生成"，因为门票/开放时间这类细节无法经高德核实，需要用户自行确认。同一城市第二次搜索直接命中缓存，不再产生 LLM 费用。详见 [RAG 知识库 → 未收录城市的模型冷启动](#rag-知识库)。
 
 **Q5: 编辑行程保存后，重新打开历史为什么没变？**
 
